@@ -46,43 +46,47 @@ public enum MsgpackValue: Sendable {
 /// is a trap for anyone asserting on a result. ``bigInt`` participates too, so an
 /// integer is equal to itself however wide it arrived.
 extension MsgpackValue: Hashable {
-    /// Sign and big-endian magnitude with leading zeroes stripped: one shape every
-    /// integer case can be compared and hashed in.
-    var integerCanonical: (negative: Bool, magnitude: [UInt8])? {
+    /// One shape every integer case can be compared and hashed in.
+    ///
+    /// Decoding hashes every map key, so the common cases must not allocate:
+    /// ``narrow`` covers everything representable in 64 bits, which is every
+    /// integer Synapse sends outside the ext types.
+    enum IntegerCanonical: Hashable {
+        case narrow(negative: Bool, magnitude: UInt64)
+        case wide(negative: Bool, magnitude: [UInt8])
+    }
+
+    var integerCanonical: IntegerCanonical? {
         switch self {
         case .int(let value):
-            return (value < 0, MsgpackValue.bigEndian(value.magnitude))
+            return .narrow(negative: value < 0, magnitude: value.magnitude)
         case .uint(let value):
-            return (false, MsgpackValue.bigEndian(value))
+            return .narrow(negative: false, magnitude: value)
         case .bigInt(let sign, let magnitude):
             let stripped = BigIntBytes.stripLeadingZeros(magnitude)
-            // Zero has no sign, so -0 and 0 must not compare differently.
-            return (sign == .minus && !stripped.isEmpty, stripped)
+            // Zero has no sign, so -0 must not differ from 0.
+            let negative = sign == .minus && !stripped.isEmpty
+            // A big integer that fits in 64 bits is the same number as a narrow one
+            // and has to compare and hash identically.
+            guard stripped.count > 8 else {
+                var value: UInt64 = 0
+                for byte in stripped { value = (value << 8) | UInt64(byte) }
+                return .narrow(negative: negative, magnitude: value)
+            }
+            return .wide(negative: negative, magnitude: stripped)
         default:
             return nil
         }
     }
 
-    private static func bigEndian(_ value: UInt64) -> [UInt8] {
-        var bytes: [UInt8] = []
-        var shift = 56
-        while shift >= 0 {
-            let byte = UInt8truncating(value >> UInt64(shift))
-            if !bytes.isEmpty || byte != 0 { bytes.append(byte) }
-            shift -= 8
-        }
-        return bytes
-    }
-
-    private static func UInt8truncating(_ value: UInt64) -> UInt8 {
-        UInt8(value & 0xff)
-    }
-
     public static func == (lhs: MsgpackValue, rhs: MsgpackValue) -> Bool {
-        if let left = lhs.integerCanonical, let right = rhs.integerCanonical {
-            return left.negative == right.negative && left.magnitude == right.magnitude
-        }
         switch (lhs, rhs) {
+        // Fast paths first: these dominate, and they allocate nothing.
+        case (.int(let a), .int(let b)): return a == b
+        case (.uint(let a), .uint(let b)): return a == b
+        case (.int(let a), .uint(let b)), (.uint(let b), .int(let a)):
+            return a >= 0 && UInt64(a) == b
+
         case (.null, .null): return true
         case (.bool(let a), .bool(let b)): return a == b
         case (.double(let a), .double(let b)): return a == b
@@ -92,7 +96,13 @@ extension MsgpackValue: Hashable {
         case (.array(let a), .array(let b)): return a == b
         case (.map(let a), .map(let b)): return a == b
         case (.ext(let a, let x), .ext(let b, let y)): return a == b && x == y
-        default: return false
+
+        default:
+            // Anything involving .bigInt, where a width conversion may be needed.
+            guard let left = lhs.integerCanonical, let right = rhs.integerCanonical else {
+                return false
+            }
+            return left == right
         }
     }
 
@@ -101,8 +111,7 @@ extension MsgpackValue: Hashable {
         // numeric form rather than its case.
         if let canonical = integerCanonical {
             hasher.combine(0 as UInt8)
-            hasher.combine(canonical.negative)
-            hasher.combine(canonical.magnitude)
+            hasher.combine(canonical)
             return
         }
         switch self {

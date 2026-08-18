@@ -86,6 +86,9 @@ jobs:
             tcp)  echo "TELEPATH_TEST_URL=tcp://root:s3cret@127.0.0.1:27492/" >> $GITHUB_ENV ;;
             cell) echo "TELEPATH_TEST_URL=cell://$PWD/.testcortex/cortex00" >> $GITHUB_ENV ;;
           esac
+          # The Cortex embeds an Axon, whose upload() returns a dynamic share. That
+          # is the only live source of a t2:share, so point the share test at it.
+          echo "TELEPATH_AXON_URL=cell://$PWD/.testcortex/cortex00/axon" >> $GITHUB_ENV
 
       - name: Integration tests
         # Missing server becomes a failure rather than a silent skip.
