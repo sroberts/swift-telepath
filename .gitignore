@@ -5,3 +5,5 @@
 # Local conformance-testing environment
 .venv-synapse/
 .testcortex/
+.dockercortex/
+.venv-drift/

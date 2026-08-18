@@ -1,0 +1,53 @@
+name: Nightly
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+jobs:
+  fuzz:
+    name: Fuzz (one hour)
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      # spec.md M0 exit criteria: the fuzz target runs an hour clean. Seeds are
+      # varied per shard so successive nights explore different inputs; any failure
+      # prints the seed needed to replay it.
+      - name: Fuzz the codec for one hour
+        run: swift run -c release msgpack-fuzz --seconds 3600 --seed ${{ github.run_number }}
+
+  memory:
+    name: Streaming memory ceiling
+    runs-on: ubuntu-latest
+    container: swift:6.0-jammy
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Synapse
+        run: |
+          apt-get update && apt-get install -y --no-install-recommends python3-venv procps
+          python3 -m venv /opt/synvenv
+          /opt/synvenv/bin/pip install --quiet "synapse==2.249.0"
+
+      - name: Start Cortex
+        run: |
+          PYTHON=/opt/synvenv/bin/python ./scripts/run-test-cortex.sh &
+          for i in $(seq 1 120); do
+            if [ -S .testcortex/cortex00/sock ]; then break; fi
+            sleep 2
+          done
+          test -S .testcortex/cortex00/sock || { echo "::error::Cortex failed to start"; exit 1; }
+
+      # spec.md M3 exit criteria: a large query must stream without unbounded
+      # memory growth. Links disable autoRead and read only when a consumer waits,
+      # so peak RSS should stay flat regardless of result size.
+      - name: Stream a large query under an RSS ceiling
+        env:
+          TELEPATH_TEST_URL: cell://.testcortex/cortex00
+          TELEPATH_REQUIRE_INTEGRATION: "1"
+          TELEPATH_LARGE_STREAM: "1"
+        run: swift test --filter StreamVolumeTests

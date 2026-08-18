@@ -1,0 +1,104 @@
+name: Synapse drift
+
+# Telepath is defined by its implementation and carries no stability guarantee.
+# Vertex can change it in any minor release, so the mitigation is to check every
+# week rather than to assume nothing moved.
+on:
+  schedule:
+    - cron: "0 7 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  drift:
+    name: Compare against the latest Synapse
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install the latest Synapse
+        id: install
+        run: |
+          python -m venv .venv-drift
+          .venv-drift/bin/pip install --quiet --upgrade synapse
+          LATEST=$(.venv-drift/bin/python -c "import synapse; print('.'.join(str(p) for p in synapse.version))")
+          PINNED=$(grep -oE 'SYNAPSE_PINNED_VERSION = [0-9.]+' Package.swift | awk '{print $3}')
+          echo "latest=$LATEST" >> $GITHUB_OUTPUT
+          echo "pinned=$PINNED" >> $GITHUB_OUTPUT
+          echo "Pinned $PINNED, latest $LATEST"
+
+      - name: Regenerate codec vectors against the latest release
+        id: vectors
+        run: |
+          .venv-drift/bin/python tools/genvectors.py > /tmp/vectors-latest.json
+          if diff -q Tests/MsgpackTests/vectors.json /tmp/vectors-latest.json > /dev/null; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+            diff -u Tests/MsgpackTests/vectors.json /tmp/vectors-latest.json > /tmp/vectors.diff || true
+            head -c 8000 /tmp/vectors.diff > /tmp/vectors-excerpt.diff
+          fi
+
+      # A version bump alone is worth knowing about; a vector change means the wire
+      # format moved and the codec may no longer be correct.
+      - name: Open an issue when the wire format or version moved
+        if: steps.vectors.outputs.changed == 'true' || steps.install.outputs.latest != steps.install.outputs.pinned
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LATEST: ${{ steps.install.outputs.latest }}
+          PINNED: ${{ steps.install.outputs.pinned }}
+          VECTORS_CHANGED: ${{ steps.vectors.outputs.changed }}
+        run: |
+          TITLE="Synapse drift: pinned $PINNED, latest $LATEST"
+
+          # Avoid filing the same issue every week.
+          EXISTING=$(gh issue list --state open --search "$TITLE in:title" --json number --jq '.[0].number')
+          if [ -n "$EXISTING" ]; then
+            echo "Issue #$EXISTING already open; nothing to file."
+            exit 0
+          fi
+
+          BODY="Weekly drift check against the latest Synapse release.
+
+          | | |
+          |---|---|
+          | Pinned | \`$PINNED\` |
+          | Latest | \`$LATEST\` |
+          | Codec vectors changed | \`$VECTORS_CHANGED\` |
+
+          "
+          if [ "$VECTORS_CHANGED" = "true" ]; then
+            BODY="$BODY**The packed bytes changed.** The codec may no longer match the
+          wire format. Review the diff before bumping.
+
+          \`\`\`diff
+          $(cat /tmp/vectors-excerpt.diff)
+          \`\`\`
+          "
+          else
+            BODY="$BODY Codec vectors are unchanged, so the msgpack layer is unaffected.
+          \`features\` entries and \`sharinfo\` contents still change between releases,
+          so re-run the integration suite against \`$LATEST\` before bumping.
+          "
+          fi
+
+          BODY="$BODY
+          To bump: update \`SYNAPSE_PINNED_VERSION\` in Package.swift, the version in
+          README.md and the CI workflows, then regenerate vectors with
+          \`tools/genvectors.py\`."
+
+          gh issue create --title "$TITLE" --body "$BODY" --label "synapse-drift" || \
+            gh issue create --title "$TITLE" --body "$BODY"
+
+      - name: Report
+        run: |
+          echo "Pinned:  ${{ steps.install.outputs.pinned }}"
+          echo "Latest:  ${{ steps.install.outputs.latest }}"
+          echo "Vectors changed: ${{ steps.vectors.outputs.changed }}"

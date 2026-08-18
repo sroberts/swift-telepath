@@ -11,7 +11,7 @@
 ///   the wire as ext type 0 (unsigned) or ext type 1 (signed). It is kept distinct
 ///   from ``ext(code:data:)`` so that encoding is unambiguous and an *unknown* ext
 ///   code still surfaces as a clean protocol error instead of a decode crash.
-public enum MsgpackValue: Hashable, Sendable {
+public enum MsgpackValue: Sendable {
     case null
     case bool(Bool)
     case int(Int64)
@@ -32,6 +32,91 @@ public enum MsgpackValue: Hashable, Sendable {
 
     public enum Sign: Hashable, Sendable {
         case plus, minus
+    }
+}
+
+// MARK: - Equality
+
+/// Integers compare by numeric value, not by which case carries them.
+///
+/// msgpack draws no wire distinction between a signed and an unsigned integer, so
+/// `.int(0)` encodes to the same byte as `.uint(0)` and decodes back as whichever
+/// case the format byte implies. Case-sensitive equality would make a decoded value
+/// unequal to the value that produced it — `MsgpackValue.int(5) != .uint(5)` — which
+/// is a trap for anyone asserting on a result. ``bigInt`` participates too, so an
+/// integer is equal to itself however wide it arrived.
+extension MsgpackValue: Hashable {
+    /// Sign and big-endian magnitude with leading zeroes stripped: one shape every
+    /// integer case can be compared and hashed in.
+    var integerCanonical: (negative: Bool, magnitude: [UInt8])? {
+        switch self {
+        case .int(let value):
+            return (value < 0, MsgpackValue.bigEndian(value.magnitude))
+        case .uint(let value):
+            return (false, MsgpackValue.bigEndian(value))
+        case .bigInt(let sign, let magnitude):
+            let stripped = BigIntBytes.stripLeadingZeros(magnitude)
+            // Zero has no sign, so -0 and 0 must not compare differently.
+            return (sign == .minus && !stripped.isEmpty, stripped)
+        default:
+            return nil
+        }
+    }
+
+    private static func bigEndian(_ value: UInt64) -> [UInt8] {
+        var bytes: [UInt8] = []
+        var shift = 56
+        while shift >= 0 {
+            let byte = UInt8truncating(value >> UInt64(shift))
+            if !bytes.isEmpty || byte != 0 { bytes.append(byte) }
+            shift -= 8
+        }
+        return bytes
+    }
+
+    private static func UInt8truncating(_ value: UInt64) -> UInt8 {
+        UInt8(value & 0xff)
+    }
+
+    public static func == (lhs: MsgpackValue, rhs: MsgpackValue) -> Bool {
+        if let left = lhs.integerCanonical, let right = rhs.integerCanonical {
+            return left.negative == right.negative && left.magnitude == right.magnitude
+        }
+        switch (lhs, rhs) {
+        case (.null, .null): return true
+        case (.bool(let a), .bool(let b)): return a == b
+        case (.double(let a), .double(let b)): return a == b
+        case (.string(let a), .string(let b)): return a == b
+        case (.rawString(let a), .rawString(let b)): return a == b
+        case (.binary(let a), .binary(let b)): return a == b
+        case (.array(let a), .array(let b)): return a == b
+        case (.map(let a), .map(let b)): return a == b
+        case (.ext(let a, let x), .ext(let b, let y)): return a == b && x == y
+        default: return false
+        }
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        // Equal values must hash equally, so every integer case hashes its canonical
+        // numeric form rather than its case.
+        if let canonical = integerCanonical {
+            hasher.combine(0 as UInt8)
+            hasher.combine(canonical.negative)
+            hasher.combine(canonical.magnitude)
+            return
+        }
+        switch self {
+        case .null: hasher.combine(1 as UInt8)
+        case .bool(let value): hasher.combine(2 as UInt8); hasher.combine(value)
+        case .double(let value): hasher.combine(3 as UInt8); hasher.combine(value)
+        case .string(let value): hasher.combine(4 as UInt8); hasher.combine(value)
+        case .rawString(let value): hasher.combine(5 as UInt8); hasher.combine(value)
+        case .binary(let value): hasher.combine(6 as UInt8); hasher.combine(value)
+        case .array(let value): hasher.combine(7 as UInt8); hasher.combine(value)
+        case .map(let value): hasher.combine(8 as UInt8); hasher.combine(value)
+        case .ext(let code, let data): hasher.combine(9 as UInt8); hasher.combine(code); hasher.combine(data)
+        case .int, .uint, .bigInt: break   // handled above
+        }
     }
 }
 

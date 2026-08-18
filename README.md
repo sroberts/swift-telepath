@@ -74,7 +74,7 @@ TELEPATH_TEST_URL="tcp://root:s3cret@127.0.0.1:27492/" swift test
 ## Conformance
 
 Telepath has no published specification — it is defined by its Python
-implementation. Two things stand in for a spec:
+implementation. Four things stand in for a spec:
 
 **Codec vectors.** `tools/genvectors.py` imports `synapse.lib.msgpack` and emits
 the exact bytes Synapse produces for boundary cases: 64-bit integer limits, ext
@@ -85,13 +85,52 @@ and float edge cases. The Swift suite replays each in both directions.
 .venv-synapse/bin/python tools/genvectors.py > Tests/MsgpackTests/vectors.json
 ```
 
-**Integration tests.** The suite in `Tests/` runs against a real Cortex, covering
-the handshake, unary calls, generators, remote exceptions, concurrency above the
-pool high water mark, and early generator abandonment.
+**Integration tests.** The suite runs against a real Cortex, covering the
+handshake, unary calls, generators, remote exceptions, concurrency above the pool
+high water mark, and early generator abandonment.
 
-Re-run both on every Synapse minor release. `features` entries and `sharinfo`
-contents change between releases even though the protocol major version has been
-3 for years.
+**Recorded exchanges.** `tools/capture.py` proxies a real client-server session,
+decoding both directions with Synapse's own unpacker, and writes
+`Tests/TelepathTests/protocol-vectors.json`. `ReplayTests` drives the client using
+only those recorded bytes, so parsing is tested against what a server actually
+sent rather than against my reading of the protocol. The corpus deliberately
+includes `t2:share`, which this client does not implement yet.
+
+```sh
+python tools/capture.py --listen 27493 --upstream 127.0.0.1:27492 \
+    --out Tests/TelepathTests/protocol-vectors.json --label unary-call
+# then point the client at 127.0.0.1:27493 and exercise the scenario
+```
+
+**Fuzzing.** `msgpack-fuzz` generates values weighted toward the cases that break
+codecs, mutates valid messages, feeds arbitrary bytes to the decoder, and checks
+chunked streaming. Failures print the seed needed to replay them.
+
+```sh
+swift run -c release msgpack-fuzz --seconds 3600      # spec M0 exit criteria
+swift run -c release msgpack-fuzz --seed 42 --iterations 1000
+```
+
+`PropertyTests` runs seeded slices of the same checks in the normal suite, so CI
+catches regressions without an hour-long job.
+
+Re-run all of these on every Synapse minor release. `features` entries and
+`sharinfo` contents change between releases even though the protocol major
+version has been 3 for years.
+
+## CI
+
+| Workflow | Runs | Covers |
+|---|---|---|
+| `ci.yml` | push, pull request | build and unit tests (macOS + Linux); integration over `tcp` and `cell` against a pinned Cortex; integration against the published `vertexproject/synapse-cortex` image; a two-minute fuzz |
+| `nightly.yml` | daily | one-hour fuzz; a 131k-node stream under an RSS ceiling |
+| `drift.yml` | weekly | regenerates vectors against the newest Synapse and opens an issue on any change |
+
+Integration suites skip themselves when `TELEPATH_TEST_URL` is unset, which is
+convenient locally and dangerous in CI — a job that forgot to start a Cortex would
+report green having tested no protocol code. CI sets
+`TELEPATH_REQUIRE_INTEGRATION=1`, which turns a missing server into a failure
+instead of a skip.
 
 ## Why the codec is hand-written
 
@@ -141,4 +180,6 @@ server instead of filling a userspace buffer.
 - **Reconnect.** A dropped main link surfaces as an error rather than
   re-handshaking. Deliberate: silently re-handshaking loses server-side share
   state and would loop after a credential rotation.
+- **`Config.callTimeout`.** Declared but not enforced; a call currently waits
+  indefinitely. `Config.poolLowWater` is likewise inert.
 - **Server side.** Out of scope.

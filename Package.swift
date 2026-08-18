@@ -30,9 +30,25 @@ let package = Package(
             ]
         ),
         .target(name: "Synapse", dependencies: ["Telepath", "Msgpack"]),
-        .testTarget(name: "MsgpackTests", dependencies: ["Msgpack"], resources: [.copy("vectors.json")]),
-        .testTarget(name: "TelepathTests", dependencies: ["Telepath", "Msgpack"]),
-        .testTarget(name: "SynapseTests", dependencies: ["Synapse", "Telepath", "Msgpack"]),
+        // Shared by the long-running fuzz executable and the fast property tests.
+        .target(name: "MsgpackFuzzCore", dependencies: ["Msgpack"]),
+        .executableTarget(name: "msgpack-fuzz", dependencies: ["MsgpackFuzzCore", "Msgpack"]),
+        .target(
+            name: "TelepathTestKit",
+            dependencies: [
+                "Msgpack",
+                "Telepath",
+                .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "NIOPosix", package: "swift-nio"),
+            ]
+        ),
+        .testTarget(name: "MsgpackTests", dependencies: ["Msgpack", "MsgpackFuzzCore"], resources: [.copy("vectors.json")]),
+        .testTarget(
+            name: "TelepathTests",
+            dependencies: ["Telepath", "Msgpack", "TelepathTestKit"],
+            resources: [.copy("protocol-vectors.json")]
+        ),
+        .testTarget(name: "SynapseTests", dependencies: ["Synapse", "Telepath", "Msgpack", "TelepathTestKit"]),
     ],
     swiftLanguageModes: [.v6]
 )

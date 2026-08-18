@@ -1,0 +1,130 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Conformance is pinned to one Synapse release. Bump here, in Package.swift's
+  # SYNAPSE_PINNED_VERSION comment, in README.md, and regenerate vectors together.
+  SYNAPSE_VERSION: "2.249.0"
+
+jobs:
+  unit:
+    name: Unit tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Swift (Linux)
+        if: runner.os == 'Linux'
+        uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "6.0"
+
+      - name: Build
+        run: swift build --build-tests
+
+      - name: Unit tests
+        run: swift test
+
+      # The integration suites skip themselves without a server. That default is
+      # convenient locally and dangerous in CI, so prove the skip is deliberate
+      # here and require them in the integration job below.
+      - name: Confirm integration suites skipped deliberately
+        run: |
+          swift test 2>&1 | tee test-output.txt
+          grep -q "Suite IntegrationTests skipped" test-output.txt \
+            || { echo "::error::IntegrationTests neither ran nor skipped as expected"; exit 1; }
+
+  integration:
+    name: Integration (${{ matrix.transport }})
+    runs-on: ubuntu-latest
+    container: swift:6.0-jammy
+    strategy:
+      fail-fast: false
+      matrix:
+        # ssl:// is absent because TLS is not implemented yet; add it with the
+        # certhash-pinned and client-certificate cases when TelepathTLS lands.
+        transport: [tcp, cell]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Synapse ${{ env.SYNAPSE_VERSION }}
+        run: |
+          apt-get update && apt-get install -y --no-install-recommends python3-venv
+          python3 -m venv /opt/synvenv
+          /opt/synvenv/bin/pip install --quiet "synapse==${SYNAPSE_VERSION}"
+
+      - name: Start Cortex
+        run: |
+          PYTHON=/opt/synvenv/bin/python ./scripts/run-test-cortex.sh &
+          for i in $(seq 1 120); do
+            if [ -S .testcortex/cortex00/sock ]; then echo "cortex ready"; break; fi
+            sleep 2
+          done
+          test -S .testcortex/cortex00/sock || { echo "::error::Cortex failed to start"; exit 1; }
+          /opt/synvenv/bin/python -m synapse.tools.service.moduser \
+            --svcurl "cell://$PWD/.testcortex/cortex00" --passwd s3cret root
+
+      - name: Select transport URL
+        run: |
+          case "${{ matrix.transport }}" in
+            tcp)  echo "TELEPATH_TEST_URL=tcp://root:s3cret@127.0.0.1:27492/" >> $GITHUB_ENV ;;
+            cell) echo "TELEPATH_TEST_URL=cell://$PWD/.testcortex/cortex00" >> $GITHUB_ENV ;;
+          esac
+
+      - name: Integration tests
+        # Missing server becomes a failure rather than a silent skip.
+        env:
+          TELEPATH_REQUIRE_INTEGRATION: "1"
+        run: swift test
+
+  integration-docker:
+    name: Integration (official image)
+    runs-on: ubuntu-latest
+    container: swift:6.0-jammy
+    services:
+      cortex:
+        image: vertexproject/synapse-cortex:v2.249.0
+        env:
+          SYN_CORTEX_AUTH_PASSWD: s3cret
+          SYN_CORTEX_LIMIT_DISK_FREE: "0"
+          SYN_AXON_LIMIT_DISK_FREE: "0"
+          SYN_JSONSTOR_LIMIT_DISK_FREE: "0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Wait for the Cortex to accept connections
+        run: |
+          apt-get update && apt-get install -y --no-install-recommends netcat-openbsd
+          for i in $(seq 1 120); do
+            if nc -z cortex 27492; then echo "cortex ready"; exit 0; fi
+            sleep 2
+          done
+          echo "::error::Cortex service never opened port 27492"; exit 1
+
+      - name: Integration tests against the published image
+        env:
+          TELEPATH_TEST_URL: tcp://root:s3cret@cortex:27492/
+          TELEPATH_REQUIRE_INTEGRATION: "1"
+        run: swift test
+
+  fuzz:
+    name: Fuzz (short)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      # The long run lives in nightly.yml; this catches regressions per pull request.
+      - name: Fuzz the codec for two minutes
+        run: swift run -c release msgpack-fuzz --seconds 120

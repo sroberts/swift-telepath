@@ -1,5 +1,6 @@
 import Foundation
 import Msgpack
+import TelepathTestKit
 import Testing
 @testable import Telepath
 
@@ -9,12 +10,12 @@ import Testing
 /// establish conformance — a scripted fake daemon can only replay assumptions.
 /// Set TELEPATH_TEST_URL to a running cell (for example
 /// `cell:///path/to/cortex00`); the suite is skipped when it is unset.
-@Suite(.enabled(if: ProcessInfo.processInfo.environment["TELEPATH_TEST_URL"] != nil))
+@Suite(.enabled(if: IntegrationEnvironment.shouldRun))
 struct IntegrationTests {
-    var testURL: String { ProcessInfo.processInfo.environment["TELEPATH_TEST_URL"]! }
+    func testURL() throws -> String { try IntegrationEnvironment.requireURL() }
 
     private func withProxy<T>(_ body: (Proxy) async throws -> T) async throws -> T {
-        let proxy = try await Proxy.open(testURL)
+        let proxy = try await Proxy.open(try testURL())
         do {
             let result = try await body(proxy)
             await proxy.close()
@@ -149,9 +150,30 @@ struct IntegrationTests {
         }
     }
 
+    /// Axon.upload() returns a dynamically shared object. Shares are not implemented,
+    /// so the contract is a clear error rather than a hang or a misparse. Set
+    /// TELEPATH_AXON_URL to a running Axon to exercise it; this is also how
+    /// tools/capture.py records a real t2:share for the replay corpus.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["TELEPATH_AXON_URL"] != nil))
+    func dynamicShareUnsupported() async throws {
+        let url = ProcessInfo.processInfo.environment["TELEPATH_AXON_URL"]!
+        let proxy = try await Proxy.open(url)
+        defer { Task { await proxy.close() } }
+        do {
+            _ = try await proxy.call("upload")
+            Issue.record("expected a dynamic share to be rejected")
+        } catch let error as TelepathError {
+            guard case .protocolViolation(let text) = error else {
+                Issue.record("unexpected error \(error)")
+                return
+            }
+            #expect(text.contains("share"))
+        }
+    }
+
     @Test("a bad password is reported as AuthDeny during the handshake")
     func authFailure() async throws {
-        var url = try TelepathURL(testURL)
+        var url = try TelepathURL(try testURL())
         guard url.scheme == .tcp else { return }   // unix/cell sockets auth as root
         url.user = "root"
         url.password = "definitely-not-the-password"

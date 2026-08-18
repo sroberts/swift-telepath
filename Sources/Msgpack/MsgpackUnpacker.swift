@@ -248,3 +248,7 @@ func isStrictUTF8(_ bytes: [UInt8]) -> Bool {
     }
     return true
 }
+
+/// Public wrapper over the strict validator, so test and fuzz tooling can build
+/// byte sequences that are guaranteed to be invalid UTF-8.
+public func isStrictUTF8Public(_ bytes: [UInt8]) -> Bool { isStrictUTF8(bytes) }

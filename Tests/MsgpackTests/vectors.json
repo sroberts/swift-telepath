@@ -326,5 +326,39 @@
       "expect": "false",
       "roundtrip": true
     }
+  ],
+  "digestVectors": [
+    {
+      "description": "20 MiB binary blob",
+      "kind": "binary",
+      "detail": "i % 251",
+      "byteLength": 20971525,
+      "headerHex": "c601400000000102",
+      "fnv1a64": "5279997539944907864"
+    },
+    {
+      "description": "1 MiB ascii string",
+      "kind": "string",
+      "detail": "z repeated",
+      "byteLength": 1048581,
+      "headerHex": "db001000007a7a7a",
+      "fnv1a64": "14850915616866238954"
+    },
+    {
+      "description": "100k element integer array",
+      "kind": "array",
+      "detail": "range",
+      "byteLength": 368549,
+      "headerHex": "dd000186a0000102",
+      "fnv1a64": "15349721258029156805"
+    },
+    {
+      "description": "10k entry map",
+      "kind": "map",
+      "detail": "key{i}: i",
+      "byteLength": 108509,
+      "headerHex": "de2710a46b657930",
+      "fnv1a64": "11063555274502902910"
+    }
   ]
 }

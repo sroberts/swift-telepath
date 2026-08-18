@@ -2,12 +2,13 @@ import Foundation
 import Msgpack
 import Synapse
 import Telepath
+import TelepathTestKit
 import Testing
 
-@Suite(.enabled(if: ProcessInfo.processInfo.environment["TELEPATH_TEST_URL"] != nil))
+@Suite(.enabled(if: IntegrationEnvironment.shouldRun))
 struct CortexTests {
     private func withCortex<T>(_ body: (Cortex) async throws -> T) async throws -> T {
-        let cortex = try await Cortex.open(ProcessInfo.processInfo.environment["TELEPATH_TEST_URL"]!)
+        let cortex = try await Cortex.open(try IntegrationEnvironment.requireURL())
         do {
             let result = try await body(cortex)
             await cortex.close()
@@ -137,21 +138,83 @@ struct CortexTests {
     }
 }
 
-/// Volume test for the NIO-to-AsyncSequence boundary. Reads are issued explicitly
-/// rather than buffered, so a large result set must stream at bounded memory.
-@Suite(.enabled(if: ProcessInfo.processInfo.environment["TELEPATH_TEST_URL"] != nil))
+/// Volume tests for the NIO-to-AsyncSequence boundary. Links disable autoRead and
+/// issue a read only when a consumer is waiting, so peak memory should track the
+/// consumer's appetite rather than the size of the result set.
+@Suite(.enabled(if: IntegrationEnvironment.shouldRun))
 struct StreamVolumeTests {
-    @Test("a large query streams to completion", .timeLimit(.minutes(2)))
+    /// Resident set size, for asserting that streaming does not accumulate.
+    static func residentBytes() -> UInt64 {
+        #if canImport(Darwin)
+        var info = mach_task_basic_info()
+        var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size / MemoryLayout<natural_t>.size)
+        let result = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &count)
+            }
+        }
+        return result == KERN_SUCCESS ? info.resident_size : 0
+        #else
+        guard let statm = try? String(contentsOfFile: "/proc/self/statm", encoding: .utf8),
+              let residentPages = statm.split(separator: " ").dropFirst().first,
+              let pages = UInt64(residentPages) else { return 0 }
+        return pages * UInt64(sysconf(Int32(_SC_PAGESIZE)))
+        #endif
+    }
+
+    /// Set TELEPATH_LARGE_STREAM=1 for the 131k-node run spec.md M3 calls for.
+    /// The default keeps pull-request CI quick.
+    static var isLargeRun: Bool {
+        ProcessInfo.processInfo.environment["TELEPATH_LARGE_STREAM"] == "1"
+    }
+
+    @Test("a large query streams to completion at bounded memory", .timeLimit(.minutes(30)))
     func largeStream() async throws {
-        let cortex = try await Cortex.open(ProcessInfo.processInfo.environment["TELEPATH_TEST_URL"]!)
+        let cortex = try await Cortex.open(try IntegrationEnvironment.requireURL())
         defer { Task { await cortex.close() } }
 
-        // A /20 is 4096 addresses: enough to cross many socket reads.
+        // A /20 is 4096 addresses; a /15 is 131072, which is the M3 target.
+        let query = Self.isLargeRun ? "[ inet:ipv4=10.64.0.0/15 ]" : "[ inet:ipv4=10.20.0.0/20 ]"
+        let expected = Self.isLargeRun ? 131_072 : 4_096
+
+        // Let the proxy and its first link settle before sampling.
+        _ = try await cortex.callStorm("return((1))")
+        let baseline = Self.residentBytes()
+        var peak = baseline
+
         var seen = 0
-        for try await node in cortex.nodes("[ inet:ipv4=10.20.0.0/20 ]") {
+        for try await node in cortex.nodes(query) {
             #expect(node.form == "inet:ipv4")
             seen += 1
+            if seen % 1_000 == 0 {
+                peak = max(peak, Self.residentBytes())
+            }
         }
-        #expect(seen == 4096)
+        #expect(seen == expected)
+
+        // Backpressure means growth should track the consumer, not the result size.
+        // The ceiling is deliberately loose: it is here to catch buffering the whole
+        // stream, not to police allocator noise.
+        let growth = peak > baseline ? peak - baseline : 0
+        let ceiling: UInt64 = 512 * 1024 * 1024
+        #expect(growth < ceiling,
+                "streaming \(seen) nodes grew RSS by \(growth / 1_048_576) MiB")
+    }
+
+    /// Abandoning repeatedly must not leak links or file descriptors.
+    @Test("repeated early abandonment does not accumulate connections")
+    func repeatedAbandonment() async throws {
+        let cortex = try await Cortex.open(try IntegrationEnvironment.requireURL())
+        defer { Task { await cortex.close() } }
+
+        for _ in 0..<50 {
+            var seen = 0
+            for try await _ in cortex.nodes("[ inet:ipv4=10.30.0.0/24 ]") {
+                seen += 1
+                if seen >= 2 { break }
+            }
+        }
+        // Still healthy after fifty abandoned streams.
+        #expect(try await cortex.callStorm("return((7))", returning: Int.self) == 7)
     }
 }

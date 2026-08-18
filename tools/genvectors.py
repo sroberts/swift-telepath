@@ -99,7 +99,43 @@ add("none", None, kind="null", expect=None)
 add("true", True, kind="bool", expect="true")
 add("false", False, kind="bool", expect="false")
 
+# --- large payloads ------------------------------------------------------------
+# Storing a 20 MiB blob as hex would add 40 MB to the repository, so these record
+# a checksum of the packed bytes instead. The Swift test builds the same value,
+# packs it, and compares length and digest.
+DIGEST_VECTORS = []
+
+
+def fnv1a64(data):
+    """FNV-1a, chosen because it is trivial to reimplement identically in Swift."""
+    h = 0xcbf29ce484222325
+    for byte in data:
+        h ^= byte
+        h = (h * 0x100000001b3) & 0xFFFFFFFFFFFFFFFF
+    return h
+
+
+def add_digest(desc, obj, kind, *, detail=None):
+    buf = s_msgpack.en(obj)
+    DIGEST_VECTORS.append({
+        "description": desc,
+        "kind": kind,
+        "detail": detail,
+        "byteLength": len(buf),
+        "headerHex": buf[:8].hex(),
+        "fnv1a64": str(fnv1a64(buf)),
+    })
+
+
+# 20 MiB exercises chunked socket reads and the bin32 header.
+add_digest("20 MiB binary blob", bytes(i % 251 for i in range(20 * 1024 * 1024)),
+           "binary", detail="i % 251")
+add_digest("1 MiB ascii string", "z" * (1024 * 1024), "string", detail="z repeated")
+add_digest("100k element integer array", tuple(range(100_000)), "array", detail="range")
+add_digest("10k entry map", {f"key{i}": i for i in range(10_000)}, "map", detail="key{i}: i")
+
 json.dump({
     "synapseVersion": ".".join(str(p) for p in __import__("synapse").version),
     "vectors": VECTORS,
+    "digestVectors": DIGEST_VECTORS,
 }, sys.stdout, indent=2)
