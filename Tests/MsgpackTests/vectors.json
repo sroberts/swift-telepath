@@ -7,7 +7,8 @@
       "hex": "00",
       "kind": "int",
       "expect": "0",
-      "roundtrip": true
+      "roundtrip": true,
+      "unsupported": null
     },
     {
       "description": "positive fixint max",
@@ -15,7 +16,8 @@
       "hex": "7f",
       "kind": "int",
       "expect": "127",
-      "roundtrip": true
+      "roundtrip": true,
+      "unsupported": null
     },
     {
       "description": "negative fixint min",
@@ -23,7 +25,8 @@
       "hex": "e0",
       "kind": "int",
       "expect": "-32",
-      "roundtrip": true
+      "roundtrip": true,
+      "unsupported": null
     },
     {
       "description": "int64 min",
@@ -31,7 +34,8 @@
       "hex": "d38000000000000000",
       "kind": "int",
       "expect": "-9223372036854775808",
-      "roundtrip": true
+      "roundtrip": true,
+      "unsupported": null
     },
     {
       "description": "uint64 max",
@@ -39,7 +43,8 @@
       "hex": "cfffffffffffffffff",
       "kind": "uint",
       "expect": "18446744073709551615",
-      "roundtrip": true
+      "roundtrip": true,
+      "unsupported": null
     },
     {
       "description": "uint64 max + 1 (ext 0)",
@@ -50,7 +55,8 @@
         "sign": "+",
         "magHex": "010000000000000000"
       },
-      "roundtrip": true
+      "roundtrip": true,
+      "unsupported": null
     },
     {
       "description": "int64 min - 1 (ext 1)",
@@ -61,7 +67,8 @@
         "sign": "-",
         "magHex": "8000000000000001"
       },
-      "roundtrip": true
+      "roundtrip": true,
+      "unsupported": null
     },
     {
       "description": "big positive, 40 byte magnitude",
@@ -72,7 +79,8 @@
         "sign": "+",
         "magHex": "80000000000000000000000000000000000000000000000000000000000000000000000000003039"
       },
-      "roundtrip": true
+      "roundtrip": true,
+      "unsupported": null
     },
     {
       "description": "big negative, 40 byte magnitude",
@@ -83,7 +91,8 @@
         "sign": "-",
         "magHex": "80000000000000000000000000000000000000000000000000000000000000000000000000003039"
       },
-      "roundtrip": true
+      "roundtrip": true,
+      "unsupported": null
     },
     {
       "description": "ext 0 boundary exact power",
@@ -94,7 +103,8 @@
         "sign": "+",
         "magHex": "0100000000000000000000000000000000"
       },
-      "roundtrip": true
+      "roundtrip": true,
+      "unsupported": null
     },
     {
       "description": "ext 1 large negative power",
@@ -105,7 +115,8 @@
         "sign": "-",
         "magHex": "0100000000000000000000000000000000"
       },
-      "roundtrip": true
+      "roundtrip": true,
+      "unsupported": null
     },
     {
       "description": "ext 1 non-minimal width",
@@ -116,7 +127,8 @@
         "sign": "-",
         "magHex": "80000000000000000000000000000000"
       },
-      "roundtrip": true
+      "roundtrip": true,
+      "unsupported": null
     },
     {
       "description": "empty string",
@@ -124,7 +136,8 @@
       "hex": "a0",
       "kind": "string",
       "expect": "",
-      "roundtrip": true
+      "roundtrip": true,
+      "unsupported": null
     },
     {
       "description": "ascii string",
@@ -132,7 +145,8 @@
       "hex": "a568656c6c6f",
       "kind": "string",
       "expect": "hello",
-      "roundtrip": true
+      "roundtrip": true,
+      "unsupported": null
     },
     {
       "description": "unicode string",
@@ -140,7 +154,8 @@
       "hex": "a9c3a9e4b8adf09f9880",
       "kind": "string",
       "expect": "\u00e9\u4e2d\ud83d\ude00",
-      "roundtrip": true
+      "roundtrip": true,
+      "unsupported": null
     },
     {
       "description": "empty bytes",
@@ -148,7 +163,8 @@
       "hex": "c400",
       "kind": "binary",
       "expect": "",
-      "roundtrip": true
+      "roundtrip": true,
+      "unsupported": null
     },
     {
       "description": "bytes",
@@ -156,7 +172,8 @@
       "hex": "c4040001feff",
       "kind": "binary",
       "expect": "0001feff",
-      "roundtrip": true
+      "roundtrip": true,
+      "unsupported": null
     },
     {
       "description": "str8 boundary 32 chars",
@@ -164,7 +181,8 @@
       "hex": "d9207878787878787878787878787878787878787878787878787878787878787878",
       "kind": "string",
       "expect": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-      "roundtrip": true
+      "roundtrip": true,
+      "unsupported": null
     },
     {
       "description": "str16 boundary 256 chars",
@@ -172,7 +190,8 @@
       "hex": "da010079797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979",
       "kind": "string",
       "expect": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-      "roundtrip": true
+      "roundtrip": true,
+      "unsupported": null
     },
     {
       "description": "lone high surrogate",
@@ -180,7 +199,8 @@
       "hex": "a3eda080",
       "kind": "rawstring",
       "expect": "eda080",
-      "roundtrip": true
+      "roundtrip": true,
+      "unsupported": null
     },
     {
       "description": "lone low surrogate embedded",
@@ -188,7 +208,8 @@
       "hex": "a561edbfbf62",
       "kind": "rawstring",
       "expect": "61edbfbf62",
-      "roundtrip": true
+      "roundtrip": true,
+      "unsupported": null
     },
     {
       "description": "astral plane char is valid utf8",
@@ -196,7 +217,8 @@
       "hex": "a4f09f9880",
       "kind": "string",
       "expect": "\ud83d\ude00",
-      "roundtrip": true
+      "roundtrip": true,
+      "unsupported": null
     },
     {
       "description": "surrogate pair spelled separately",
@@ -204,7 +226,8 @@
       "hex": "a6eda0bdedb880",
       "kind": "rawstring",
       "expect": "eda0bdedb880",
-      "roundtrip": true
+      "roundtrip": true,
+      "unsupported": null
     },
     {
       "description": "integer map keys",
@@ -212,7 +235,8 @@
       "hex": "8201a16102a162",
       "kind": "map",
       "expect": null,
-      "roundtrip": true
+      "roundtrip": true,
+      "unsupported": null
     },
     {
       "description": "tuple map key",
@@ -220,7 +244,8 @@
       "hex": "81920102a470616972",
       "kind": "map",
       "expect": null,
-      "roundtrip": true
+      "roundtrip": true,
+      "unsupported": null
     },
     {
       "description": "mixed key types",
@@ -228,7 +253,8 @@
       "hex": "82a1730107a169",
       "kind": "map",
       "expect": null,
-      "roundtrip": true
+      "roundtrip": true,
+      "unsupported": null
     },
     {
       "description": "empty array",
@@ -236,7 +262,8 @@
       "hex": "90",
       "kind": "array",
       "expect": null,
-      "roundtrip": true
+      "roundtrip": true,
+      "unsupported": null
     },
     {
       "description": "empty map",
@@ -244,7 +271,8 @@
       "hex": "80",
       "kind": "map",
       "expect": null,
-      "roundtrip": true
+      "roundtrip": true,
+      "unsupported": null
     },
     {
       "description": "nested 8 deep",
@@ -252,7 +280,8 @@
       "hex": "91919191919191919101",
       "kind": "array",
       "expect": null,
-      "roundtrip": true
+      "roundtrip": true,
+      "unsupported": null
     },
     {
       "description": "telepath t2:init shape",
@@ -260,7 +289,8 @@
       "hex": "92a774323a696e697483a4746f646f93ab67657443656c6c496e666f9080a46e616d65c0a473657373d9206161616161616161616161616161616161616161616161616161616161616161",
       "kind": "array",
       "expect": null,
-      "roundtrip": true
+      "roundtrip": true,
+      "unsupported": null
     },
     {
       "description": "float",
@@ -268,7 +298,8 @@
       "hex": "cb3ff8000000000000",
       "kind": "double",
       "expect": "1.5",
-      "roundtrip": true
+      "roundtrip": true,
+      "unsupported": null
     },
     {
       "description": "negative zero",
@@ -276,7 +307,8 @@
       "hex": "cb8000000000000000",
       "kind": "double",
       "expect": "-0.0",
-      "roundtrip": true
+      "roundtrip": true,
+      "unsupported": null
     },
     {
       "description": "infinity",
@@ -284,7 +316,8 @@
       "hex": "cb7ff0000000000000",
       "kind": "double",
       "expect": "inf",
-      "roundtrip": true
+      "roundtrip": true,
+      "unsupported": null
     },
     {
       "description": "negative infinity",
@@ -292,7 +325,8 @@
       "hex": "cbfff0000000000000",
       "kind": "double",
       "expect": "-inf",
-      "roundtrip": true
+      "roundtrip": true,
+      "unsupported": null
     },
     {
       "description": "nan",
@@ -300,7 +334,8 @@
       "hex": "cb7ff8000000000000",
       "kind": "double",
       "expect": "nan",
-      "roundtrip": true
+      "roundtrip": true,
+      "unsupported": null
     },
     {
       "description": "none",
@@ -308,7 +343,8 @@
       "hex": "c0",
       "kind": "null",
       "expect": null,
-      "roundtrip": true
+      "roundtrip": true,
+      "unsupported": null
     },
     {
       "description": "true",
@@ -316,7 +352,8 @@
       "hex": "c3",
       "kind": "bool",
       "expect": "true",
-      "roundtrip": true
+      "roundtrip": true,
+      "unsupported": null
     },
     {
       "description": "false",
@@ -324,7 +361,8 @@
       "hex": "c2",
       "kind": "bool",
       "expect": "false",
-      "roundtrip": true
+      "roundtrip": true,
+      "unsupported": null
     }
   ],
   "digestVectors": [
@@ -334,7 +372,8 @@
       "detail": "i % 251",
       "byteLength": 20971525,
       "headerHex": "c601400000000102",
-      "fnv1a64": "5279997539944907864"
+      "fnv1a64": "5279997539944907864",
+      "unsupported": null
     },
     {
       "description": "1 MiB ascii string",
@@ -342,7 +381,8 @@
       "detail": "z repeated",
       "byteLength": 1048581,
       "headerHex": "db001000007a7a7a",
-      "fnv1a64": "14850915616866238954"
+      "fnv1a64": "14850915616866238954",
+      "unsupported": null
     },
     {
       "description": "100k element integer array",
@@ -350,7 +390,8 @@
       "detail": "range",
       "byteLength": 368549,
       "headerHex": "dd000186a0000102",
-      "fnv1a64": "15349721258029156805"
+      "fnv1a64": "15349721258029156805",
+      "unsupported": null
     },
     {
       "description": "10k entry map",
@@ -358,7 +399,8 @@
       "detail": "key{i}: i",
       "byteLength": 108509,
       "headerHex": "de2710a46b657930",
-      "fnv1a64": "11063555274502902910"
+      "fnv1a64": "11063555274502902910",
+      "unsupported": null
     }
   ]
 }

@@ -20,8 +20,24 @@ def add(desc, obj, *, kind, expect=None, roundtrip=True):
 
     kind/expect describe the value the Swift decoder must produce, spelled in a
     small tagged form so the test does not have to re-derive Python semantics.
+
+    A value the release cannot pack is recorded as unsupported rather than raising.
+    Synapse 3.0.0 dropped unicode_errors='surrogatepass', so lone surrogates became
+    unserialisable; the drift job needs to report that as a finding, not die on it.
     """
-    buf = s_msgpack.en(obj)
+    try:
+        buf = s_msgpack.en(obj)
+    except Exception as e:                              # noqa: BLE001
+        VECTORS.append({
+            "description": desc,
+            "pythonRepr": repr(obj),
+            "hex": None,
+            "kind": kind,
+            "expect": expect,
+            "roundtrip": False,
+            "unsupported": f"{type(e).__name__}: {e}",
+        })
+        return
     if kind == "bigint":
         # Emit sign + magnitude hex so the Swift test compares structurally
         # instead of re-implementing arbitrary-precision decimal parsing.
@@ -38,6 +54,7 @@ def add(desc, obj, *, kind, expect=None, roundtrip=True):
         "expect": expect,
         # False where Python's packer is not the canonical form we re-emit.
         "roundtrip": roundtrip,
+        "unsupported": None,
     })
 
 
@@ -116,7 +133,15 @@ def fnv1a64(data):
 
 
 def add_digest(desc, obj, kind, *, detail=None):
-    buf = s_msgpack.en(obj)
+    try:
+        buf = s_msgpack.en(obj)
+    except Exception as e:                              # noqa: BLE001
+        DIGEST_VECTORS.append({
+            "description": desc, "kind": kind, "detail": detail,
+            "byteLength": 0, "headerHex": "", "fnv1a64": "0",
+            "unsupported": f"{type(e).__name__}: {e}",
+        })
+        return
     DIGEST_VECTORS.append({
         "description": desc,
         "kind": kind,
@@ -124,6 +149,7 @@ def add_digest(desc, obj, kind, *, detail=None):
         "byteLength": len(buf),
         "headerHex": buf[:8].hex(),
         "fnv1a64": str(fnv1a64(buf)),
+        "unsupported": None,
     })
 
 
@@ -135,7 +161,9 @@ add_digest("100k element integer array", tuple(range(100_000)), "array", detail=
 add_digest("10k entry map", {f"key{i}": i for i in range(10_000)}, "map", detail="key{i}: i")
 
 json.dump({
-    "synapseVersion": ".".join(str(p) for p in __import__("synapse").version),
+    # synapse.version is a tuple in 2.x and a string in 3.0; normalise both.
+    "synapseVersion": (lambda v: v if isinstance(v, str) else ".".join(str(p) for p in v))(
+        __import__("synapse").version),
     "vectors": VECTORS,
     "digestVectors": DIGEST_VECTORS,
 }, sys.stdout, indent=2)

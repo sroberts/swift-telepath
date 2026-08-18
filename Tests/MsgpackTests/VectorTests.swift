@@ -15,10 +15,15 @@ struct VectorTests {
     struct Vector: Decodable {
         let description: String
         let pythonRepr: String
-        let hex: String
+        /// Nil when the generating release could not pack the value at all.
+        let hex: String?
         let kind: String
         let expect: Expectation?
         let roundtrip: Bool
+        /// Set when the release refused to pack this value. Synapse 3.0.0 dropped
+        /// `unicode_errors='surrogatepass'`, so lone surrogates became unpackable
+        /// there — recorded as a finding rather than silently dropped.
+        let unsupported: String?
     }
 
     /// `expect` is polymorphic across kinds: a scalar for most, sign+magnitude for
@@ -49,11 +54,17 @@ struct VectorTests {
     func pinnedVersion() {
         #expect(Self.manifest.synapseVersion == "2.249.0")
         #expect(Self.manifest.vectors.count >= 30)
+        // The pinned release packs every case. A regeneration that quietly lost
+        // coverage would otherwise pass by skipping the missing vectors.
+        let unsupported = Self.manifest.vectors.filter { $0.unsupported != nil }
+        #expect(unsupported.isEmpty,
+                "pinned release could not pack: \(unsupported.map(\.description))")
     }
 
     @Test("every vector decodes to the expected value", arguments: VectorTests.manifest.vectors)
     func decodes(vector: Vector) throws {
-        let bytes = try #require(hexToBytes(vector.hex))
+        guard let hex = vector.hex else { return }   // unpackable on this release
+        let bytes = try #require(hexToBytes(hex))
         let value = try MsgpackUnpacker.decode(bytes)
         assertKind(value, vector: vector)
     }
@@ -68,8 +79,8 @@ struct VectorTests {
     /// identical encoded length instead.
     @Test("every vector re-encodes to identical bytes", arguments: VectorTests.manifest.vectors)
     func reencodes(vector: Vector) throws {
-        guard vector.roundtrip else { return }
-        let bytes = try #require(hexToBytes(vector.hex))
+        guard vector.roundtrip, let hex = vector.hex else { return }
+        let bytes = try #require(hexToBytes(hex))
         let value = try MsgpackUnpacker.decode(bytes)
         let encoded = MsgpackPacker.encode(value)
 
@@ -77,7 +88,7 @@ struct VectorTests {
             #expect(try MsgpackUnpacker.decode(encoded) == value, "\(vector.description) semantic round-trip")
             #expect(encoded.count == bytes.count, "\(vector.description) encoded length")
         } else {
-            #expect(encoded == bytes, "\(vector.description): \(bytesToHex(encoded)) != \(vector.hex)")
+            #expect(encoded == bytes, "\(vector.description): \(bytesToHex(encoded)) != \(hex)")
         }
     }
 

@@ -118,6 +118,22 @@ Re-run all of these on every Synapse minor release. `features` entries and
 `sharinfo` contents change between releases even though the protocol major
 version has been 3 for years.
 
+### Synapse 3.0
+
+Synapse 3.0.0 is published and requires Python 3.14. Regenerating the vectors
+against it shows every case packing byte-identically to 2.249.0 **except lone
+surrogates, which 3.0 refuses to pack at all** — it dropped
+`unicode_errors='surrogatepass'`, raising `NotMsgpackSafe` instead.
+
+So the codec needs no changes for 3.0, and `MsgpackValue.rawString` becomes a
+compatibility concern rather than a live one: a conformant 3.0 server cannot emit
+a non-UTF-8 `str`, while 2.x servers still do. Keep decoding it, since this client
+supports both, but do not expect to encode one toward a 3.0 peer.
+
+`tools/genvectors.py` records an unpackable value as `unsupported` rather than
+failing, so the drift job reports the difference instead of dying on it. Note also
+that `synapse.version` changed from a tuple to a string in 3.0.
+
 ## CI
 
 | Workflow | Runs | Covers |
