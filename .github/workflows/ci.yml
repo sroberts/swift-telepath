@@ -54,8 +54,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # ssl:// is absent because TLS is not implemented yet; add it with the
-        # certhash-pinned and client-certificate cases when TelepathTLS lands.
+        # ssl:// lives in the integration-tls job, which needs a certificate
+        # authority and two listeners to cover pinning and client certificates.
         transport: [tcp, cell]
     steps:
       - uses: actions/checkout@v4
@@ -104,6 +104,41 @@ jobs:
       - name: Cortex log
         if: failure()
         run: tail -100 cortex.log
+
+  integration-tls:
+    name: Integration (TLS)
+    runs-on: ubuntu-latest
+    container: swift:6.0-noble
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Synapse ${{ env.SYNAPSE_VERSION }}
+        run: |
+          apt-get update && apt-get install -y --no-install-recommends python3-venv
+          python3 -m venv /opt/synvenv
+          /opt/synvenv/bin/pip install --quiet "synapse==${SYNAPSE_VERSION}"
+
+      # Generates a CA, a server certificate and a client certificate, then starts
+      # two listeners: Synapse sets CERT_REQUIRED on any listener carrying ?ca=, so
+      # one cannot serve both password and certificate authentication.
+      - name: Start TLS listeners
+        run: PYTHON=/opt/synvenv/bin/python ./scripts/run-tls-test-cortex.sh
+
+      - name: TLS integration tests
+        env:
+          TELEPATH_TLS_HOST: localhost
+          TELEPATH_TLS_PORT: "27500"
+          TELEPATH_TLS_CLIENTCERT_PORT: "27501"
+        run: |
+          export TELEPATH_CERT_DIR="$PWD/.testcerts"
+          export TELEPATH_CERT_HASH="$(cat .testcerts/certhash)"
+          swift test --filter TLSIntegrationTests
+
+      - name: Server logs
+        if: failure()
+        run: |
+          tail -60 .testcortex/cortex-tls/server.log || true
+          tail -60 .testcortex/cell-clientcert/server.log || true
 
   integration-docker:
     name: Integration (official image)

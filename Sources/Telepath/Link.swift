@@ -1,6 +1,8 @@
 import Msgpack
 import NIOCore
 import NIOPosix
+import NIOSSL
+import TelepathTLS
 
 /// One connection carrying an unframed msgpack stream.
 ///
@@ -22,9 +24,22 @@ final class Link: Sendable {
     static func connect(
         to url: TelepathURL,
         group: any EventLoopGroup,
-        timeout: TimeAmount
+        timeout: TimeAmount,
+        certificateDirectory: CertificateDirectory? = nil
     ) async throws -> Link {
         let handler = LinkHandler()
+
+        // Built once, off the event loop: reading certificates from disk must not
+        // happen inside the channel initializer.
+        let tls: TLSSetup? = url.scheme == .ssl
+            ? try TLSSetup(url: url, certificateDirectory: certificateDirectory)
+            : nil
+
+        // Fulfilled when the TLS handshake completes or fails, so the caller sees
+        // the real error instead of a closed-channel write failure.
+        let handshakePromise: EventLoopPromise<Void>? =
+            tls != nil ? group.next().makePromise(of: Void.self) : nil
+
         let bootstrap = ClientBootstrap(group: group)
             // Reads are issued explicitly so an unconsumed stream applies
             // backpressure to the server instead of filling a userspace buffer.
@@ -32,7 +47,16 @@ final class Link: Sendable {
             .channelOption(.socketOption(.so_reuseaddr), value: 1)
             .connectTimeout(timeout)
             .channelInitializer { channel in
-                channel.pipeline.addHandler(handler)
+                do {
+                    if let tls, let handshakePromise {
+                        try channel.pipeline.syncOperations.addHandlers(
+                            tls.handlers(handshake: handshakePromise))
+                    }
+                    try channel.pipeline.syncOperations.addHandler(handler)
+                    return channel.eventLoop.makeSucceededVoidFuture()
+                } catch {
+                    return channel.eventLoop.makeFailedFuture(error)
+                }
             }
 
         let channel: Channel
@@ -41,15 +65,26 @@ final class Link: Sendable {
             guard let host = url.host else {
                 throw TelepathError.invalidURL("\(url)", reason: "missing host")
             }
-            if url.scheme == .ssl {
-                throw TelepathError.unsupportedScheme("ssl", reason: "TLS support is not implemented yet")
-            }
             channel = try await bootstrap.connect(host: host, port: url.port).get()
         case .unix, .cell:
             guard let path = url.path else {
                 throw TelepathError.invalidURL("\(url)", reason: "missing socket path")
             }
             channel = try await bootstrap.connect(unixDomainSocketPath: path).get()
+        }
+        if let handshakePromise {
+            // The link disables autoRead so an unconsumed stream applies backpressure.
+            // A TLS handshake, though, needs to read before anyone has asked for a
+            // message, and NIOSSL only re-reads once a read is already pending — so
+            // without this kick the handshake stalls on the first round trip. After
+            // it completes, normal demand-driven reads take over.
+            channel.read()
+            do {
+                try await handshakePromise.futureResult.get()
+            } catch {
+                try? await channel.close()
+                throw error
+            }
         }
         return Link(channel: channel, handler: handler)
     }
@@ -80,6 +115,66 @@ final class Link: Sendable {
 
     func close() async {
         try? await channel.close().get()
+    }
+}
+
+/// Resolves a URL's TLS parameters into the handlers a connection needs.
+///
+/// Synapse's rules, reproduced exactly because a conventional TLS client cannot
+/// reach real deployments: hostname verification is off in both modes; a `certhash`
+/// pins the peer and disables chain trust entirely; otherwise the CA chain is
+/// verified and the certificate's **common name** is compared to the hostname.
+private struct TLSSetup {
+    let context: NIOSSLContext
+    let policy: TLSPolicy
+    let expectedHostname: String?
+
+    init(url: TelepathURL, certificateDirectory: CertificateDirectory?) throws {
+        let hostname = url.expectedHostname
+        self.expectedHostname = hostname
+
+        if let certHash = url.certHash {
+            self.policy = .pinnedFingerprint(certHash)
+        } else {
+            guard let hostname else {
+                throw TelepathError.invalidURL("\(url)", reason: "ssl:// requires a hostname to verify")
+            }
+            self.policy = .certificateAuthority(expectedHostname: hostname)
+        }
+
+        // Precedence: the URL's certdir, then the caller's, then Synapse's default.
+        let directory = CertificateDirectory(path: url.certDirectory)
+            ?? certificateDirectory
+            ?? CertificateDirectory(root: CertificateDirectory.defaultRoot)
+
+        // A user supplied without a password authenticates by client certificate,
+        // which Synapse resolves as `{user}@{hostname}`.
+        var clientCertificateName = url.certName
+        if clientCertificateName == nil, let user = url.user, url.password == nil, let hostname {
+            clientCertificateName = CertificateDirectory.clientCertificateName(user: user, hostname: hostname)
+        }
+
+        self.context = try TelepathTLS.makeContext(
+            policy: policy,
+            certificateDirectory: directory,
+            clientCertificateName: clientCertificateName
+        )
+    }
+
+    func handlers(handshake: EventLoopPromise<Void>) throws -> [ChannelHandler] {
+        let failure = TLSVerificationFailure()
+        // Pinning already identifies the peer exactly, so the name check applies
+        // only to the CA path.
+        var expectedCommonName: String?
+        if case .certificateAuthority(let hostname) = policy {
+            expectedCommonName = hostname
+        }
+        return [
+            try TelepathTLS.makeHandler(context: context, policy: policy,
+                                        serverHostname: expectedHostname, failure: failure),
+            TLSHandshakeHandler(expectedHostname: expectedCommonName, promise: handshake,
+                                failure: failure),
+        ]
     }
 }
 

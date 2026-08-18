@@ -59,10 +59,12 @@ Sources/Msgpack/    # value model, packer, unpacker, streaming unpacker, Codable
                     # NO package dependencies and no Foundation — must stay extractable
 Sources/Telepath/   # TelepathURL, Link (NIO), Proxy (actor: handshake + pool + calls),
                     # TelepathStream, errors, retn decoding      → Msgpack, NIO, Logging
+Sources/TelepathTLS/  # cert directory, pinning, CN check      → NIOSSL, Crypto, X509
 Sources/Synapse/    # Cortex facade, Storm message model, Node   → Telepath
+Sources/TelepathTestKit/  # scriptable daemon, integration gating
 ```
 
-`TelepathTLS` and `TelepathTestKit` from the spec do not exist yet; TLS work belongs in the former when it lands. Allowed dependencies: `swift-nio`, `swift-nio-ssl`, `swift-log`, `swift-crypto`. Nothing else. Never expose `EventLoopFuture` in public API — bridge at the boundary. `Proxy` is an actor; all public value types are `Sendable`.
+Allowed dependencies: `swift-nio`, `swift-nio-ssl`, `swift-log`, `swift-crypto`. Nothing else. Never expose `EventLoopFuture` in public API — bridge at the boundary. `Proxy` is an actor; all public value types are `Sendable`.
 
 `Msgpack` deliberately avoids Foundation, so use the local `hexEncode` and `isStrictUTF8` helpers rather than reaching for `String(format:)` or `String(bytes:encoding:)`. `String(validating:as:)` is macOS 15+ and unavailable at this deployment target.
 
@@ -86,6 +88,10 @@ These are the things that break silently if violated. They are cross-cutting, so
 **Errors are `retn` tuples, not exceptions.** `(True, value)` or `(False, (excName, infoMap))` everywhere. Map to a single `TelepathRemoteError` carrying the name string plus decoded info; never mirror Synapse's exception hierarchy, and never fail decoding because a name is unrecognized (`.other(String)` case is required).
 
 **TLS deviates from the norm deliberately.** `check_hostname` is off. With `certhash`, trust is disabled entirely and the SHA-256 of the peer's DER cert is compared to the pin. Without it, the CA chain is verified and then the certificate **subject CN** (not SAN) is compared to the expected hostname. Reproduce exactly or real deployments fail to connect. `URLSession` cannot express this — use `NIOSSLCustomVerificationCallback`.
+
+**TLS deviates from the norm deliberately, and the deviations are load-bearing.** Hostname verification is off. `certhash` takes precedence and, when present, disables chain trust and skips the name check entirely (Synapse: `if certhash: ... elif hostname:`). Otherwise the CA chain is verified and the subject **common name** is compared exactly — no wildcards, no case folding — because Synapse compares with `!=` and being more permissive would accept certificates a Python client rejects. A user with no password authenticates by a client certificate named `{user}@{hostname}`.
+
+Two NIOSSL traps, both found by testing against a live server: setting `certificateVerification = .none` means the custom verification callback is **never invoked**, silently disabling pinning — verification must stay enabled and the callback overrides BoringSSL's logic anyway. And the link disables `autoRead`, so a TLS handshake stalls unless a read is kicked off explicitly, since NIOSSL only re-reads when a read is already pending.
 
 **Forward compatibility is required, not optional.** Unknown Storm message kinds decode to `.other(name:data:)`; unknown `features` entries are gated with `hasFeature(_:minVersion:)`. Vertex adds both between minor releases.
 

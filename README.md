@@ -7,8 +7,9 @@ Protocol version `(3, 0)`, task v2. Conformance is pinned to Synapse **2.249.0**
 Swift 6 strict concurrency, macOS 14+ / iOS 17+.
 
 > **Status: MVP.** Connect, call, and stream against a real Cortex over `tcp://`,
-> `unix://`, and `cell://`. TLS, dynamic shares, and `aha://` are not implemented
-> yet — see [Not yet implemented](#not-yet-implemented).
+> `ssl://`, `unix://`, and `cell://`, including certificate pinning and TLS client
+> certificates. Dynamic shares and `aha://` are not implemented yet — see
+> [Not yet implemented](#not-yet-implemented).
 
 ## Usage
 
@@ -69,6 +70,16 @@ is set:
     --svcurl "cell://$PWD/.testcortex/cortex00" --passwd s3cret root
 
 TELEPATH_TEST_URL="tcp://root:s3cret@127.0.0.1:27492/" swift test
+```
+
+TLS needs its own listeners and a certificate authority:
+
+```sh
+./scripts/run-tls-test-cortex.sh              # 27500 password/CA/pinning, 27501 client cert
+export TELEPATH_CERT_DIR="$PWD/.testcerts"
+export TELEPATH_CERT_HASH="$(cat .testcerts/certhash)"
+export TELEPATH_TLS_CLIENTCERT_PORT=27501
+swift test --filter TLSIntegrationTests
 ```
 
 ## Conformance
@@ -138,7 +149,7 @@ that `synapse.version` changed from a tuple to a string in 3.0.
 
 | Workflow | Runs | Covers |
 |---|---|---|
-| `ci.yml` | push, pull request | build and unit tests (macOS + Linux); integration over `tcp` and `cell` against a pinned Cortex; integration against the published `vertexproject/synapse-cortex` image; a two-minute fuzz |
+| `ci.yml` | push, pull request | build and unit tests (macOS + Linux); integration over `tcp` and `cell` against a pinned Cortex; TLS integration covering CA trust, pinning and client certificates; integration against the published `vertexproject/synapse-cortex` image; a two-minute fuzz |
 | `nightly.yml` | daily | one-hour fuzz; a 131k-node stream under an RSS ceiling |
 | `drift.yml` | weekly | regenerates vectors against the newest Synapse and opens an issue on any change |
 
@@ -162,6 +173,50 @@ Swift package handles:
   `MsgpackValue.rawString` and round-trip byte for byte, because failing a whole
   message over one dirty property would make the library unusable against real
   Cortex data.
+
+## TLS
+
+Synapse's TLS behaviour is deliberately not standard, because its services
+routinely run on dynamic IPs. Reproducing it exactly is not optional: a
+conventional TLS client cannot connect to a real deployment.
+
+```swift
+// Trust the CA chain, then compare the certificate's common name.
+let cortex = try await Cortex.open("ssl://root:secret@cortex.example.com:27492/?certdir=/path/to/certs")
+
+// Pin the server instead. Chain trust is disabled entirely.
+let pinned = try await Cortex.open("ssl://root:secret@10.0.0.5:27492/?certhash=df2449...")
+
+// No password: authenticate with the client certificate Synapse names
+// "{user}@{hostname}", found in the certificate directory.
+let byCert = try await Cortex.open("ssl://root@cortex.example.com:27492/?certdir=/path/to/certs")
+```
+
+What it does, matching `synapse/lib/link.py`:
+
+- **Hostname verification is off** in both modes.
+- **`certhash` takes precedence.** When set, chain trust is disabled and the
+  SHA-256 of the peer's DER certificate is compared to the pin; the common name is
+  then not consulted at all, mirroring Synapse's `if certhash: ... elif hostname:`.
+  A mismatch raises `TLSError.badCertificate` (Synapse's `LinkBadCert`).
+- **Otherwise the CA chain is verified** and the certificate's subject **common
+  name** — not its SAN — is compared to the hostname, exactly, with no wildcard
+  handling and no case folding, because Synapse compares with `!=`. Being more
+  permissive would accept certificates that a Python client rejects. A mismatch
+  raises `TLSError.badCertificateHost` (`BadCertHost`).
+- **A user with no password** authenticates by client certificate, resolved as
+  `{user}@{hostname}` from the certificate directory, and the handshake's `auth`
+  field stays nil.
+- Synapse's certificate directory layout (`cas/`, `hosts/`, `users/`) is read
+  directly, so existing deployments work without re-provisioning. The directory
+  comes from the URL's `certdir`, else `Config.certificateDirectory`, else
+  `$SYN_CERT_DIR`, else `~/.syn/certs`.
+
+Two things worth knowing when standing up a server to test against: a listener
+whose URL carries `?ca=` gets `CERT_REQUIRED`, so it *only* accepts clients
+presenting a certificate — it cannot also serve password authentication. And the
+session user is the certificate's common name, so a certificate issued to
+`root@localhost` needs a cell user of that exact name.
 
 ## Design decisions
 
@@ -194,8 +249,6 @@ server instead of filling a userspace buffer.
 
 ## Not yet implemented
 
-- **TLS** (`ssl://`), certificate pinning by `certhash`, and Synapse cert
-  directories. `ssl://` URLs parse but connecting throws.
 - **Dynamic shares** (`t2:share`). Detected and reported, not supported.
 - **`aha://` resolution**, mirror pools, `dynmirror`.
 - **Pool low-water prefill.** Links are opened on demand and culled above the high

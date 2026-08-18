@@ -1,7 +1,9 @@
+import Foundation
 import Logging
 import Msgpack
 import NIOCore
 import NIOPosix
+import TelepathTLS
 
 public struct Config: Sendable {
     public var connectTimeout: Duration = .seconds(10)
@@ -10,6 +12,9 @@ public struct Config: Sendable {
     public var poolLowWater: Int = 4
     public var poolHighWater: Int = 12
     public var poolCullInterval: Duration = .seconds(10)
+    /// Where to find Synapse's certificate directory. A `certdir` in the URL wins
+    /// over this; both fall back to Synapse's default location.
+    public var certificateDirectory: URL?
     public var logger = Logger(label: "telepath")
 
     public init() {}
@@ -80,8 +85,11 @@ public actor Proxy {
         let eventLoopGroup = group ?? MultiThreadedEventLoopGroup(numberOfThreads: 1)
         let ownsGroup = group == nil
         do {
-            let link = try await Link.connect(to: url, group: eventLoopGroup,
-                                              timeout: TimeAmount(config.connectTimeout))
+            let link = try await Link.connect(
+                to: url,
+                group: eventLoopGroup,
+                timeout: TimeAmount(config.connectTimeout),
+                certificateDirectory: config.certificateDirectory.map { CertificateDirectory(root: $0) })
             let result = try await Self.handshake(on: link, url: url)
             let proxy = Proxy(url: url, config: config, group: eventLoopGroup, ownsGroup: ownsGroup,
                               mainLink: link, sessionIden: result.session, shareInfo: result.shareInfo,
@@ -287,7 +295,11 @@ public actor Proxy {
         while let link = idleLinks.popLast() {
             if link.isActive { return link }
         }
-        return try await Link.connect(to: url, group: group, timeout: TimeAmount(config.connectTimeout))
+        return try await Link.connect(
+            to: url,
+            group: group,
+            timeout: TimeAmount(config.connectTimeout),
+            certificateDirectory: config.certificateDirectory.map { CertificateDirectory(root: $0) })
     }
 
     /// Returns a cleanly-terminated link to the pool, closing it when the pool is
