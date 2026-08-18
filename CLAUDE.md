@@ -1,0 +1,94 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project status
+
+MVP built: codec, transport, handshake, unary calls, generators, connection pool, and a typed Cortex facade, all verified against a live Synapse 2.249.0 Cortex. `spec.md` remains the requirements source of truth — read it before implementing anything, and update it when a decision changes rather than letting code and spec diverge. README.md's "Not yet implemented" section is the current gap list (TLS, shares, `aha://`, pool prefill, reconnect).
+
+## What this is
+
+A SwiftNIO client for **Telepath**, the msgpack RPC protocol fronting Synapse services (Cortex, Axon, AHA, JsonStor). Protocol target `(3, 0)`, pinned to Synapse **2.249.0**. Swift 6 strict concurrency, macOS 14+ / iOS 17+ / Linux.
+
+Telepath has **no published specification** — it is defined by its Python implementation. Any protocol question is answered by reading upstream Synapse source (file references are listed in `spec.md` §9), never by inference. Conformance vectors generated from Python are the de facto spec.
+
+## Commands
+
+```bash
+swift build
+swift test                                   # unit tests; integration suites skip themselves
+swift test --filter VectorTests              # one suite
+swift test --filter DecoderTests.overflow    # one test
+```
+
+Integration tests are gated on `TELEPATH_TEST_URL` and skip when it is unset. A local Cortex is faster and more informative than Docker — the pinned Synapse is already installed in `.venv-synapse` (uv):
+
+```bash
+./scripts/setup-test-env.sh                  # one-time
+./scripts/run-test-cortex.sh &               # 127.0.0.1:27492 + cell socket
+TELEPATH_TEST_URL="tcp://root:s3cret@127.0.0.1:27492/" swift test
+```
+
+Regenerate codec vectors after a Synapse bump:
+
+```bash
+.venv-synapse/bin/python tools/genvectors.py > Tests/MsgpackTests/vectors.json
+```
+
+Note: Synapse refuses to start a cell when the disk is near full; `scripts/run-test-cortex.sh` disables that guard, including for the nested axon/jsonstor cells, which read `cell.yaml` rather than the environment.
+
+## Target layout and dependency direction
+
+```
+Sources/Msgpack/    # value model, packer, unpacker, streaming unpacker, Codable decoder
+                    # NO package dependencies and no Foundation — must stay extractable
+Sources/Telepath/   # TelepathURL, Link (NIO), Proxy (actor: handshake + pool + calls),
+                    # TelepathStream, errors, retn decoding      → Msgpack, NIO, Logging
+Sources/Synapse/    # Cortex facade, Storm message model, Node   → Telepath
+```
+
+`TelepathTLS` and `TelepathTestKit` from the spec do not exist yet; TLS work belongs in the former when it lands. Allowed dependencies: `swift-nio`, `swift-nio-ssl`, `swift-log`, `swift-crypto`. Nothing else. Never expose `EventLoopFuture` in public API — bridge at the boundary. `Proxy` is an actor; all public value types are `Sendable`.
+
+`Msgpack` deliberately avoids Foundation, so use the local `hexEncode` and `isStrictUTF8` helpers rather than reaching for `String(format:)` or `String(bytes:encoding:)`. `String(validating:as:)` is macOS 15+ and unavailable at this deployment target.
+
+## Protocol invariants that span files
+
+These are the things that break silently if violated. They are cross-cutting, so they cannot be inferred from any single source file.
+
+**The msgpack is Python-flavored, not standard.** Two deviations, both mandatory:
+- Ext type 0 = unsigned big-endian integer > `2^64-1`; ext type 1 = signed big-endian < `-2^63`. Model these as `MsgpackValue.bigInt`, kept distinct from `.ext` so an unknown ext code is a clean protocol error rather than a decode crash. Any ext code other than 0/1 is a protocol error.
+- Strings are encoded with `unicode_errors='surrogatepass'`, so a msgpack `str` may hold UTF-8-encoded lone surrogates that Swift `String` cannot represent. Decode to `.string` when valid UTF-8, `.rawString([UInt8])` otherwise, and round-trip raw bytes exactly. This is not defensive — production Cortex data contains such strings, and failing the message would make the library unusable.
+- `strict_map_key=False`: map keys are arbitrary `MsgpackValue`, not `String`. `use_bin_type=True`: `str` and `bin` are never conflated.
+
+**No framing.** The link is a continuous msgpack stream fed to a streaming unpacker. Do not look for a length prefix. Every message is a 2-element array `(name, infoMap)`.
+
+**Link-per-call ownership.** A pool link is exclusively owned by one call from `t2:init` until its terminator (`t2:fini`, `t2:yield` with `retn: None`, error, or `t2:share`). Return it to the pool only on clean termination. If a consumer abandons a generator early, **close the link** — never drain it to recycle the socket.
+
+**Pool links skip the handshake.** They connect and send `t2:init` carrying the session iden obtained on the main link. The `sess` value is the only thing binding a pool link to an authenticated session, which is why handshake `sess` absence (pre-2.166 server, task v1) must fail loudly rather than degrade.
+
+**Share teardown goes on the main link.** `share:fini` is sent on the handshake link, not a pool link. Unknown message names arriving on the main link are logged and dropped — never close the connection over one.
+
+**Errors are `retn` tuples, not exceptions.** `(True, value)` or `(False, (excName, infoMap))` everywhere. Map to a single `TelepathRemoteError` carrying the name string plus decoded info; never mirror Synapse's exception hierarchy, and never fail decoding because a name is unrecognized (`.other(String)` case is required).
+
+**TLS deviates from the norm deliberately.** `check_hostname` is off. With `certhash`, trust is disabled entirely and the SHA-256 of the peer's DER cert is compared to the pin. Without it, the CA chain is verified and then the certificate **subject CN** (not SAN) is compared to the expected hostname. Reproduce exactly or real deployments fail to connect. `URLSession` cannot express this — use `NIOSSLCustomVerificationCallback`.
+
+**Forward compatibility is required, not optional.** Unknown Storm message kinds decode to `.other(name:data:)`; unknown `features` entries are gated with `hasFeature(_:minVersion:)`. Vertex adds both between minor releases.
+
+## Explicit non-goals
+
+Do not implement these without the spec being changed first: server side / `Daemon`, task v1 (`task:init`/`task:fini` — detect and error), `aha://` resolution, `getPipeline`, mirror pools / `dynmirror` / spawned links / fd passing, Network.framework transport, and Python-parity dynamic member lookup (`@dynamicCallable` cannot express async throwing calls with keyword args).
+
+## Decisions already made (do not silently reverse)
+
+- **Non-UTF-8 strings repair by default.** `MsgpackDecoder` substitutes U+FFFD for a `.rawString` reaching a `String`; `.throw` is opt-in. Raw bytes stay reachable via `MsgpackValue.stringBytes`. Settles spec §8's first open question.
+- **Maps do not round-trip byte-exactly.** Swift `Dictionary` is unordered, so re-encoding permutes map keys. Held to semantic equality plus identical encoded length in `VectorTests`. Everything else is byte-exact; do not "fix" a failing map round-trip by weakening the non-map assertions.
+- **A dropped link surfaces as an error**; `Proxy` does not re-handshake. Re-handshaking loses server-side share state and loops after a credential rotation.
+- **Abandoned generators close their link** rather than draining.
+
+Still open from spec §8: `Proxy.state` as an `AsyncStream`, and per-platform pool water marks (the Python 4/12 defaults are likely wrong for iOS on cellular, and `Config` already makes them configurable).
+
+## Conventions
+
+- Default port is **27492**. `unix://` and `cell://` put the share name after a **colon** inside the path, not after a slash; share defaults to `*`.
+- Pool water marks (low 4 / high 12, 10s cull) mirror Python and must stay configurable — they are likely wrong for iOS on cellular. Low-water prefill is not implemented; links open on demand.
+- Bump the pinned Synapse version in one place and regenerate vectors; version drift is caught by a scheduled job, not by review.

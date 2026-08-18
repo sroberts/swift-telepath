@@ -1,0 +1,330 @@
+{
+  "synapseVersion": "2.249.0",
+  "vectors": [
+    {
+      "description": "zero",
+      "pythonRepr": "0",
+      "hex": "00",
+      "kind": "int",
+      "expect": "0",
+      "roundtrip": true
+    },
+    {
+      "description": "positive fixint max",
+      "pythonRepr": "127",
+      "hex": "7f",
+      "kind": "int",
+      "expect": "127",
+      "roundtrip": true
+    },
+    {
+      "description": "negative fixint min",
+      "pythonRepr": "-32",
+      "hex": "e0",
+      "kind": "int",
+      "expect": "-32",
+      "roundtrip": true
+    },
+    {
+      "description": "int64 min",
+      "pythonRepr": "-9223372036854775808",
+      "hex": "d38000000000000000",
+      "kind": "int",
+      "expect": "-9223372036854775808",
+      "roundtrip": true
+    },
+    {
+      "description": "uint64 max",
+      "pythonRepr": "18446744073709551615",
+      "hex": "cfffffffffffffffff",
+      "kind": "uint",
+      "expect": "18446744073709551615",
+      "roundtrip": true
+    },
+    {
+      "description": "uint64 max + 1 (ext 0)",
+      "pythonRepr": "18446744073709551616",
+      "hex": "c70900010000000000000000",
+      "kind": "bigint",
+      "expect": {
+        "sign": "+",
+        "magHex": "010000000000000000"
+      },
+      "roundtrip": true
+    },
+    {
+      "description": "int64 min - 1 (ext 1)",
+      "pythonRepr": "-9223372036854775809",
+      "hex": "c70901ff7fffffffffffffff",
+      "kind": "bigint",
+      "expect": {
+        "sign": "-",
+        "magHex": "8000000000000001"
+      },
+      "roundtrip": true
+    },
+    {
+      "description": "big positive, 40 byte magnitude",
+      "pythonRepr": "1067993517960455041197510853084776057301352261178326384973520803911109862890320275011481043480633",
+      "hex": "c7280080000000000000000000000000000000000000000000000000000000000000000000000000003039",
+      "kind": "bigint",
+      "expect": {
+        "sign": "+",
+        "magHex": "80000000000000000000000000000000000000000000000000000000000000000000000000003039"
+      },
+      "roundtrip": true
+    },
+    {
+      "description": "big negative, 40 byte magnitude",
+      "pythonRepr": "-1067993517960455041197510853084776057301352261178326384973520803911109862890320275011481043480633",
+      "hex": "c72901ff7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffcfc7",
+      "kind": "bigint",
+      "expect": {
+        "sign": "-",
+        "magHex": "80000000000000000000000000000000000000000000000000000000000000000000000000003039"
+      },
+      "roundtrip": true
+    },
+    {
+      "description": "ext 0 boundary exact power",
+      "pythonRepr": "340282366920938463463374607431768211456",
+      "hex": "c711000100000000000000000000000000000000",
+      "kind": "bigint",
+      "expect": {
+        "sign": "+",
+        "magHex": "0100000000000000000000000000000000"
+      },
+      "roundtrip": true
+    },
+    {
+      "description": "ext 1 large negative power",
+      "pythonRepr": "-340282366920938463463374607431768211456",
+      "hex": "c71101ff00000000000000000000000000000000",
+      "kind": "bigint",
+      "expect": {
+        "sign": "-",
+        "magHex": "0100000000000000000000000000000000"
+      },
+      "roundtrip": true
+    },
+    {
+      "description": "ext 1 non-minimal width",
+      "pythonRepr": "-170141183460469231731687303715884105728",
+      "hex": "c71101ff80000000000000000000000000000000",
+      "kind": "bigint",
+      "expect": {
+        "sign": "-",
+        "magHex": "80000000000000000000000000000000"
+      },
+      "roundtrip": true
+    },
+    {
+      "description": "empty string",
+      "pythonRepr": "''",
+      "hex": "a0",
+      "kind": "string",
+      "expect": "",
+      "roundtrip": true
+    },
+    {
+      "description": "ascii string",
+      "pythonRepr": "'hello'",
+      "hex": "a568656c6c6f",
+      "kind": "string",
+      "expect": "hello",
+      "roundtrip": true
+    },
+    {
+      "description": "unicode string",
+      "pythonRepr": "'\u00e9\u4e2d\ud83d\ude00'",
+      "hex": "a9c3a9e4b8adf09f9880",
+      "kind": "string",
+      "expect": "\u00e9\u4e2d\ud83d\ude00",
+      "roundtrip": true
+    },
+    {
+      "description": "empty bytes",
+      "pythonRepr": "b''",
+      "hex": "c400",
+      "kind": "binary",
+      "expect": "",
+      "roundtrip": true
+    },
+    {
+      "description": "bytes",
+      "pythonRepr": "b'\\x00\\x01\\xfe\\xff'",
+      "hex": "c4040001feff",
+      "kind": "binary",
+      "expect": "0001feff",
+      "roundtrip": true
+    },
+    {
+      "description": "str8 boundary 32 chars",
+      "pythonRepr": "'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'",
+      "hex": "d9207878787878787878787878787878787878787878787878787878787878787878",
+      "kind": "string",
+      "expect": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "roundtrip": true
+    },
+    {
+      "description": "str16 boundary 256 chars",
+      "pythonRepr": "'yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy'",
+      "hex": "da010079797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979",
+      "kind": "string",
+      "expect": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+      "roundtrip": true
+    },
+    {
+      "description": "lone high surrogate",
+      "pythonRepr": "'\\ud800'",
+      "hex": "a3eda080",
+      "kind": "rawstring",
+      "expect": "eda080",
+      "roundtrip": true
+    },
+    {
+      "description": "lone low surrogate embedded",
+      "pythonRepr": "'a\\udfffb'",
+      "hex": "a561edbfbf62",
+      "kind": "rawstring",
+      "expect": "61edbfbf62",
+      "roundtrip": true
+    },
+    {
+      "description": "astral plane char is valid utf8",
+      "pythonRepr": "'\ud83d\ude00'",
+      "hex": "a4f09f9880",
+      "kind": "string",
+      "expect": "\ud83d\ude00",
+      "roundtrip": true
+    },
+    {
+      "description": "surrogate pair spelled separately",
+      "pythonRepr": "'\\ud83d\\ude00'",
+      "hex": "a6eda0bdedb880",
+      "kind": "rawstring",
+      "expect": "eda0bdedb880",
+      "roundtrip": true
+    },
+    {
+      "description": "integer map keys",
+      "pythonRepr": "{1: 'a', 2: 'b'}",
+      "hex": "8201a16102a162",
+      "kind": "map",
+      "expect": null,
+      "roundtrip": true
+    },
+    {
+      "description": "tuple map key",
+      "pythonRepr": "{(1, 2): 'pair'}",
+      "hex": "81920102a470616972",
+      "kind": "map",
+      "expect": null,
+      "roundtrip": true
+    },
+    {
+      "description": "mixed key types",
+      "pythonRepr": "{'s': 1, 7: 'i'}",
+      "hex": "82a1730107a169",
+      "kind": "map",
+      "expect": null,
+      "roundtrip": true
+    },
+    {
+      "description": "empty array",
+      "pythonRepr": "()",
+      "hex": "90",
+      "kind": "array",
+      "expect": null,
+      "roundtrip": true
+    },
+    {
+      "description": "empty map",
+      "pythonRepr": "{}",
+      "hex": "80",
+      "kind": "map",
+      "expect": null,
+      "roundtrip": true
+    },
+    {
+      "description": "nested 8 deep",
+      "pythonRepr": "(((((((((1,),),),),),),),),)",
+      "hex": "91919191919191919101",
+      "kind": "array",
+      "expect": null,
+      "roundtrip": true
+    },
+    {
+      "description": "telepath t2:init shape",
+      "pythonRepr": "('t2:init', {'todo': ('getCellInfo', (), {}), 'name': None, 'sess': 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'})",
+      "hex": "92a774323a696e697483a4746f646f93ab67657443656c6c496e666f9080a46e616d65c0a473657373d9206161616161616161616161616161616161616161616161616161616161616161",
+      "kind": "array",
+      "expect": null,
+      "roundtrip": true
+    },
+    {
+      "description": "float",
+      "pythonRepr": "1.5",
+      "hex": "cb3ff8000000000000",
+      "kind": "double",
+      "expect": "1.5",
+      "roundtrip": true
+    },
+    {
+      "description": "negative zero",
+      "pythonRepr": "-0.0",
+      "hex": "cb8000000000000000",
+      "kind": "double",
+      "expect": "-0.0",
+      "roundtrip": true
+    },
+    {
+      "description": "infinity",
+      "pythonRepr": "inf",
+      "hex": "cb7ff0000000000000",
+      "kind": "double",
+      "expect": "inf",
+      "roundtrip": true
+    },
+    {
+      "description": "negative infinity",
+      "pythonRepr": "-inf",
+      "hex": "cbfff0000000000000",
+      "kind": "double",
+      "expect": "-inf",
+      "roundtrip": true
+    },
+    {
+      "description": "nan",
+      "pythonRepr": "nan",
+      "hex": "cb7ff8000000000000",
+      "kind": "double",
+      "expect": "nan",
+      "roundtrip": true
+    },
+    {
+      "description": "none",
+      "pythonRepr": "None",
+      "hex": "c0",
+      "kind": "null",
+      "expect": null,
+      "roundtrip": true
+    },
+    {
+      "description": "true",
+      "pythonRepr": "True",
+      "hex": "c3",
+      "kind": "bool",
+      "expect": "true",
+      "roundtrip": true
+    },
+    {
+      "description": "false",
+      "pythonRepr": "False",
+      "hex": "c2",
+      "kind": "bool",
+      "expect": "false",
+      "roundtrip": true
+    }
+  ]
+}

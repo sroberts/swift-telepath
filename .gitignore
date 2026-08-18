@@ -1,0 +1,7 @@
+.build/
+.swiftpm/
+*.xcodeproj
+
+# Local conformance-testing environment
+.venv-synapse/
+.testcortex/
