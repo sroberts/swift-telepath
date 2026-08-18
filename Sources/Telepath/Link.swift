@@ -35,6 +35,26 @@ final class Link: Sendable {
             ? try TLSSetup(url: url, certificateDirectory: certificateDirectory)
             : nil
 
+        // Resolved before the handshake promise exists: a throw here would
+        // otherwise abandon the promise, and NIO traps on a leaked one.
+        enum Endpoint {
+            case network(host: String, port: Int)
+            case socket(path: String)
+        }
+        let endpoint: Endpoint
+        switch url.scheme {
+        case .tcp, .ssl:
+            guard let host = url.host else {
+                throw TelepathError.invalidURL("\(url)", reason: "missing host")
+            }
+            endpoint = .network(host: host, port: url.port)
+        case .unix, .cell:
+            guard let path = url.path else {
+                throw TelepathError.invalidURL("\(url)", reason: "missing socket path")
+            }
+            endpoint = .socket(path: path)
+        }
+
         // Fulfilled when the TLS handshake completes or fails, so the caller sees
         // the real error instead of a closed-channel write failure.
         let handshakePromise: EventLoopPromise<Void>? =
@@ -50,7 +70,7 @@ final class Link: Sendable {
                 do {
                     if let tls, let handshakePromise {
                         try channel.pipeline.syncOperations.addHandlers(
-                            tls.handlers(handshake: handshakePromise))
+                            tls.handlers(handshake: handshakePromise, timeout: timeout))
                     }
                     try channel.pipeline.syncOperations.addHandler(handler)
                     return channel.eventLoop.makeSucceededVoidFuture()
@@ -60,17 +80,20 @@ final class Link: Sendable {
             }
 
         let channel: Channel
-        switch url.scheme {
-        case .tcp, .ssl:
-            guard let host = url.host else {
-                throw TelepathError.invalidURL("\(url)", reason: "missing host")
+        do {
+            switch endpoint {
+            case .network(let host, let port):
+                channel = try await bootstrap.connect(host: host, port: port).get()
+            case .socket(let path):
+                channel = try await bootstrap.connect(unixDomainSocketPath: path).get()
             }
-            channel = try await bootstrap.connect(host: host, port: url.port).get()
-        case .unix, .cell:
-            guard let path = url.path else {
-                throw TelepathError.invalidURL("\(url)", reason: "missing socket path")
-            }
-            channel = try await bootstrap.connect(unixDomainSocketPath: path).get()
+        } catch {
+            // A channel that never went active never fires channelInactive, so the
+            // handler cannot settle the promise. Left alone it is leaked, and NIO
+            // traps on a leaked promise in debug builds — a refused connection
+            // would take the process down.
+            handshakePromise?.fail(error)
+            throw error
         }
         if let handshakePromise {
             // The link disables autoRead so an unconsumed stream applies backpressure.
@@ -161,7 +184,7 @@ private struct TLSSetup {
         )
     }
 
-    func handlers(handshake: EventLoopPromise<Void>) throws -> [ChannelHandler] {
+    func handlers(handshake: EventLoopPromise<Void>, timeout: TimeAmount) throws -> [ChannelHandler] {
         let failure = TLSVerificationFailure()
         // Pinning already identifies the peer exactly, so the name check applies
         // only to the CA path.
@@ -173,7 +196,7 @@ private struct TLSSetup {
             try TelepathTLS.makeHandler(context: context, policy: policy,
                                         serverHostname: expectedHostname, failure: failure),
             TLSHandshakeHandler(expectedHostname: expectedCommonName, promise: handshake,
-                                failure: failure),
+                                failure: failure, timeout: timeout),
         ]
     }
 }

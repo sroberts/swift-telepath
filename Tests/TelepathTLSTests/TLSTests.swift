@@ -169,6 +169,33 @@ struct TLSTests {
         #expect(try TelepathTLS.commonName(of: try fixture.leafAsNIOSSL) == "cortex.vertex.link")
     }
 
+    // MARK: - SNI
+
+    /// Synapse's client passes asyncio's `server_hostname`, so a server that selects
+    /// its certificate by SNI needs the extension sent.
+    @Test("a hostname is offered as SNI")
+    func sniForHostnames() {
+        #expect(TelepathTLS.sniHostname("cortex.vertex.link") == "cortex.vertex.link")
+        #expect(TelepathTLS.sniHostname("localhost") == "localhost")
+    }
+
+    /// SNI forbids IP literals, and NIOSSL throws cannotUseIPAddressInSNI for them.
+    @Test("IP literals are not offered as SNI")
+    func sniExcludesAddresses() {
+        #expect(TelepathTLS.sniHostname("10.0.0.5") == nil)
+        #expect(TelepathTLS.sniHostname("127.0.0.1") == nil)
+        #expect(TelepathTLS.sniHostname("::1") == nil)
+        #expect(TelepathTLS.sniHostname(nil) == nil)
+        #expect(TelepathTLS.sniHostname("") == nil)
+    }
+
+    @Test("a certificate directory path expands a leading tilde")
+    func tildeExpansion() {
+        let directory = CertificateDirectory(path: "~/.syn/certs")
+        #expect(directory?.root.path.hasPrefix("~") == false)
+        #expect(directory?.root.path.hasSuffix(".syn/certs") == true)
+    }
+
     @Test("contexts build for both policies")
     func contextConstruction() throws {
         let fixture = try Fixture(leafCommonName: "localhost")

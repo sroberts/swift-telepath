@@ -21,7 +21,7 @@ public struct CertificateDirectory: Sendable {
     public static var defaultRoot: URL {
         if let override = ProcessInfo.processInfo.environment["SYN_CERT_DIR"]
             ?? ProcessInfo.processInfo.environment["SYN_CERTDIR"] {
-            return URL(fileURLWithPath: override)
+            return URL(fileURLWithPath: expandingTilde(override))
         }
         return FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".syn")
@@ -34,7 +34,13 @@ public struct CertificateDirectory: Sendable {
 
     public init?(path: String?) {
         guard let path else { return nil }
-        self.root = URL(fileURLWithPath: path)
+        self.root = URL(fileURLWithPath: CertificateDirectory.expandingTilde(path))
+    }
+
+    /// Synapse routes certdir paths through `s_common.genpath`, which expands `~`,
+    /// so `?certdir=~/.syn/certs` works against the Python client and must here too.
+    static func expandingTilde(_ path: String) -> String {
+        (path as NSString).expandingTildeInPath
     }
 
     public var caDirectory: URL { root.appendingPathComponent("cas") }
@@ -103,6 +109,10 @@ public enum TLSError: Error, Sendable, Equatable, CustomStringConvertible {
     case malformedCertificate(String)
     case malformedFingerprint(String)
     case handshakeIncomplete
+    /// The peer closed before the handshake finished, most often because it
+    /// rejected the client certificate.
+    case peerClosedDuringHandshake
+    case handshakeTimedOut
 
     public var description: String {
         switch self {
@@ -122,6 +132,11 @@ public enum TLSError: Error, Sendable, Equatable, CustomStringConvertible {
             return "certhash is not a SHA-256 hex digest: \(value)"
         case .handshakeIncomplete:
             return "the TLS handshake completed without a peer certificate"
+        case .peerClosedDuringHandshake:
+            return "the peer closed the connection during the TLS handshake, "
+                + "which usually means it rejected the client certificate"
+        case .handshakeTimedOut:
+            return "the TLS handshake did not complete before the timeout"
         }
     }
 }

@@ -130,9 +130,18 @@ jobs:
           TELEPATH_TLS_PORT: "27500"
           TELEPATH_TLS_CLIENTCERT_PORT: "27501"
         run: |
+          set -o pipefail
           export TELEPATH_CERT_DIR="$PWD/.testcerts"
           export TELEPATH_CERT_HASH="$(cat .testcerts/certhash)"
-          swift test --filter TLSIntegrationTests
+          swift test --filter TLSIntegrationTests 2>&1 | tee tls-output.txt
+          # A filter that matches nothing exits 0, and the suite skips itself when
+          # TELEPATH_CERT_DIR is unset, so assert the tests actually ran rather
+          # than trusting a green exit.
+          grep -q "Suite TLSIntegrationTests passed" tls-output.txt || {
+            echo "::error::TLSIntegrationTests did not run"; exit 1; }
+          grep -q "Suite TLSIntegrationTests skipped" tls-output.txt && {
+            echo "::error::TLSIntegrationTests skipped"; exit 1; }
+          exit 0
 
       - name: Server logs
         if: failure()

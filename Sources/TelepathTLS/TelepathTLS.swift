@@ -93,9 +93,9 @@ public struct TelepathTLS {
             let normalized = try normalizeFingerprint(expected)
             return try NIOSSLClientHandler(
                 context: context,
-                // SNI is still useful, but no hostname verification is implied:
-                // the callback below is the only thing that can accept the peer.
-                serverHostname: nil,
+                // SNI only. No hostname verification is implied: the callback below
+                // is the only thing that can accept the peer.
+                serverHostname: sniHostname(serverHostname),
                 customVerificationCallback: { certificates, promise in
                     do {
                         guard let leaf = certificates.first else {
@@ -116,10 +116,25 @@ public struct TelepathTLS {
             )
 
         case .certificateAuthority:
-            // Hostname is withheld so NIOSSL performs no name checking of its own;
-            // the common-name comparison happens in TLSCommonNameHandler.
-            return try NIOSSLClientHandler(context: context, serverHostname: nil)
+            // The context is configured .noHostnameVerification, so this supplies
+            // SNI without NIOSSL doing any name checking of its own; the
+            // common-name comparison happens in TLSHandshakeHandler.
+            return try NIOSSLClientHandler(context: context,
+                                           serverHostname: sniHostname(serverHostname))
         }
+    }
+
+    /// The name to send as SNI, which Synapse's client supplies as asyncio's
+    /// `server_hostname`. A server that selects its certificate by SNI — a
+    /// TLS-terminating proxy, a multi-tenant listener — hands back the wrong
+    /// certificate without it.
+    ///
+    /// IP literals are excluded because SNI forbids them and NIOSSL throws
+    /// `cannotUseIPAddressInSNI`.
+    static func sniHostname(_ hostname: String?) -> String? {
+        guard let hostname, !hostname.isEmpty else { return nil }
+        if (try? SocketAddress(ipAddress: hostname, port: 0)) != nil { return nil }
+        return hostname
     }
 
     /// The SHA-256 fingerprint of a certificate's DER encoding, lowercase hex.
@@ -175,15 +190,28 @@ public final class TLSHandshakeHandler: ChannelInboundHandler, RemovableChannelH
     private let expectedHostname: String?
     private let promise: EventLoopPromise<Void>
     private let failure: TLSVerificationFailure
+    private let timeout: TimeAmount
+    private var deadline: Scheduled<Void>?
     private var settled = false
 
     /// - Parameter expectedHostname: nil when a pinned fingerprint already
     ///   identifies the peer, matching Synapse's `if certhash ... elif hostname`.
+    /// - Parameter timeout: connect timeouts stop applying once the TCP connection
+    ///   is up, so a peer that accepts and then never speaks TLS would hang the
+    ///   caller forever without this.
     public init(expectedHostname: String?, promise: EventLoopPromise<Void>,
-                failure: TLSVerificationFailure) {
+                failure: TLSVerificationFailure, timeout: TimeAmount) {
         self.expectedHostname = expectedHostname
         self.promise = promise
         self.failure = failure
+        self.timeout = timeout
+    }
+
+    public func handlerAdded(context: ChannelHandlerContext) {
+        deadline = context.eventLoop.scheduleTask(in: timeout) { [weak self] in
+            self?.settle(.failure(TLSError.handshakeTimedOut))
+            context.close(promise: nil)
+        }
     }
 
     public func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
@@ -211,13 +239,17 @@ public final class TLSHandshakeHandler: ChannelInboundHandler, RemovableChannelH
     }
 
     public func channelInactive(context: ChannelHandlerContext) {
-        settle(.failure(failure.error ?? TLSError.handshakeIncomplete))
+        // Distinct from handshakeIncomplete: the common cause is a server rejecting
+        // the client certificate and dropping the connection.
+        settle(.failure(failure.error ?? TLSError.peerClosedDuringHandshake))
         context.fireChannelInactive()
     }
 
     private func settle(_ result: Result<Void, any Error>) {
         guard !settled else { return }
         settled = true
+        deadline?.cancel()
+        deadline = nil
         promise.completeWith(result)
     }
 
