@@ -155,6 +155,13 @@ opts into strict behavior. Intelligence data is dirty and callers overwhelmingly
 want the query to finish. The exact bytes stay reachable via
 `MsgpackValue.stringBytes`, or by typing the property as `[UInt8]`/`MsgpackValue`.
 
+**Integers compare numerically, not by case.** msgpack draws no wire distinction
+between a signed and an unsigned integer, so a value encoded from `.int(5)`
+decodes as `.uint(5)`. With a derived `Equatable` that made a decoded value
+unequal to the value that produced it, which is a trap for anyone asserting on a
+result. `Equatable` and `Hashable` are hand-written and treat `.int`, `.uint`, and
+`.bigInt` as equal whenever they denote the same number. Found by fuzzing.
+
 **Maps do not round-trip byte-exactly.** Swift's `Dictionary` does not preserve
 insertion order, so a re-encoded map permutes its keys. msgpack maps are
 semantically unordered and Synapse unpacks them into a `dict`, so this carries no
