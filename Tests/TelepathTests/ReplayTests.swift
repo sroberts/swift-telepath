@@ -48,7 +48,8 @@ struct ReplayTests {
     func corpusCoverage() {
         let labels = Set(Self.corpus.scenarios.map(\.label))
         for required in ["unary-call", "unary-exception", "storm-generator",
-                         "early-abandonment", "auth-failure", "dynamic-share"] {
+                         "storm-1000-nodes", "early-abandonment", "auth-failure",
+                         "dynamic-share"] {
             #expect(labels.contains(required), "missing captured scenario: \(required)")
         }
         #expect(Self.corpus.scenarios.allSatisfy { $0.synapseVersion == "2.249.0" })
@@ -181,6 +182,32 @@ struct ReplayTests {
         }
         #expect(kinds.first == "init")
         #expect(kinds.last == "fini")
+        await proxy.close()
+    }
+
+    /// spec.md 6.2 names a 1000-node query specifically. Recorded from Synapse's own
+    /// Python client, so the captured client messages are authoritative rather than
+    /// this implementation echoed back at itself.
+    @Test("a 1000-node storm replays in full")
+    func replayLargeGenerator() async throws {
+        let replay = Replayer(scenario: Self.scenario("storm-1000-nodes"))
+        let daemon = try await FakeDaemon.start { message, connection in
+            try await replay.respond(to: message, on: connection)
+        }
+        defer { Task { await daemon.stop() } }
+
+        let proxy = try await Proxy.open(daemon.url)
+        var nodes = 0
+        var sawFini = false
+        for try await item in proxy.stream("storm", [.string("inet:ipv4=10.20.0.0/20 | limit 1000")]) {
+            switch item[0]?.stringValue {
+            case "node": nodes += 1
+            case "fini": sawFini = true
+            default: break
+            }
+        }
+        #expect(nodes == 1000)
+        #expect(sawFini)
         await proxy.close()
     }
 

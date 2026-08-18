@@ -50,7 +50,7 @@ jobs:
   integration:
     name: Integration (${{ matrix.transport }})
     runs-on: ubuntu-latest
-    container: swift:6.0-jammy
+    container: swift:6.0-noble
     strategy:
       fail-fast: false
       matrix:
@@ -60,9 +60,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Synapse requires Python >= 3.11, so this image must be noble (3.12), not
+      # jammy (3.10).
       - name: Install Synapse ${{ env.SYNAPSE_VERSION }}
         run: |
           apt-get update && apt-get install -y --no-install-recommends python3-venv
+          python3 --version
           python3 -m venv /opt/synvenv
           /opt/synvenv/bin/pip install --quiet "synapse==${SYNAPSE_VERSION}"
 
@@ -93,7 +96,7 @@ jobs:
   integration-docker:
     name: Integration (official image)
     runs-on: ubuntu-latest
-    container: swift:6.0-jammy
+    container: swift:6.0-noble
     services:
       cortex:
         image: vertexproject/synapse-cortex:v2.249.0
@@ -102,6 +105,14 @@ jobs:
           SYN_CORTEX_LIMIT_DISK_FREE: "0"
           SYN_AXON_LIMIT_DISK_FREE: "0"
           SYN_JSONSTOR_LIMIT_DISK_FREE: "0"
+        # A Cortex takes roughly a minute to open its telepath port, and the image
+        # ships its own HEALTHCHECK. Without a start period the runner declares it
+        # unhealthy while it is still starting normally.
+        options: >-
+          --health-interval 10s
+          --health-timeout 10s
+          --health-retries 30
+          --health-start-period 90s
     steps:
       - uses: actions/checkout@v4
 

@@ -22,7 +22,7 @@ jobs:
   memory:
     name: Streaming memory ceiling
     runs-on: ubuntu-latest
-    container: swift:6.0-jammy
+    container: swift:6.0-noble
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
