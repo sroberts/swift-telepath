@@ -71,12 +71,17 @@ jobs:
 
       - name: Start Cortex
         run: |
-          PYTHON=/opt/synvenv/bin/python ./scripts/run-test-cortex.sh &
+          # Redirect to a file and detach: leaving stdout on the step's pipe means
+          # the pipe closes when the step ends, and the server then dies of
+          # BrokenPipeError on its next log write while tests are still running.
+          PYTHON=/opt/synvenv/bin/python nohup ./scripts/run-test-cortex.sh \
+            > cortex.log 2>&1 &
           for i in $(seq 1 120); do
             if [ -S .testcortex/cortex00/sock ]; then echo "cortex ready"; break; fi
             sleep 2
           done
-          test -S .testcortex/cortex00/sock || { echo "::error::Cortex failed to start"; exit 1; }
+          test -S .testcortex/cortex00/sock || {
+            echo "::error::Cortex failed to start"; tail -40 cortex.log; exit 1; }
           /opt/synvenv/bin/python -m synapse.tools.service.moduser \
             --svcurl "cell://$PWD/.testcortex/cortex00" --passwd s3cret root
 
@@ -95,6 +100,10 @@ jobs:
         env:
           TELEPATH_REQUIRE_INTEGRATION: "1"
         run: swift test
+
+      - name: Cortex log
+        if: failure()
+        run: tail -100 cortex.log
 
   integration-docker:
     name: Integration (official image)

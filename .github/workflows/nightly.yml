@@ -35,12 +35,17 @@ jobs:
 
       - name: Start Cortex
         run: |
-          PYTHON=/opt/synvenv/bin/python ./scripts/run-test-cortex.sh &
+          # Redirect to a file and detach: leaving stdout on the step's pipe means
+          # the pipe closes when the step ends, and the server then dies of
+          # BrokenPipeError on its next log write while tests are still running.
+          PYTHON=/opt/synvenv/bin/python nohup ./scripts/run-test-cortex.sh \
+            > cortex.log 2>&1 &
           for i in $(seq 1 120); do
             if [ -S .testcortex/cortex00/sock ]; then break; fi
             sleep 2
           done
-          test -S .testcortex/cortex00/sock || { echo "::error::Cortex failed to start"; exit 1; }
+          test -S .testcortex/cortex00/sock || {
+            echo "::error::Cortex failed to start"; tail -40 cortex.log; exit 1; }
 
       # spec.md M3 exit criteria: a large query must stream without unbounded
       # memory growth. Links disable autoRead and read only when a consumer waits,

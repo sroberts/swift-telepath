@@ -21,21 +21,38 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          # Newer Synapse releases raise their Python floor (3.0.0 requires 3.14),
+          # so track the latest interpreter rather than a pinned one.
+          python-version: "3.x"
+
+      # Ask PyPI directly first. A release whose Python requirement this runner
+      # cannot satisfy is still drift worth reporting — and pip would otherwise
+      # quietly resolve to an older version and report no change at all.
+      - name: Query the newest published release
+        id: query
+        run: |
+          python - <<'PYEOF' >> $GITHUB_OUTPUT
+          import json, urllib.request
+          with urllib.request.urlopen("https://pypi.org/pypi/synapse/json") as response:
+              info = json.load(response)["info"]
+          print(f"latest={info['version']}")
+          print(f"requires_python={info.get('requires_python') or 'unspecified'}")
+          PYEOF
+          PINNED=$(grep -oE 'SYNAPSE_PINNED_VERSION = [0-9.]+' Package.swift | awk '{print $3}')
+          echo "pinned=$PINNED" >> $GITHUB_OUTPUT
 
       - name: Install the latest Synapse
         id: install
+        continue-on-error: true
         run: |
           python -m venv .venv-drift
-          .venv-drift/bin/pip install --quiet --upgrade synapse
-          LATEST=$(.venv-drift/bin/python -c "import synapse; print('.'.join(str(p) for p in synapse.version))")
-          PINNED=$(grep -oE 'SYNAPSE_PINNED_VERSION = [0-9.]+' Package.swift | awk '{print $3}')
-          echo "latest=$LATEST" >> $GITHUB_OUTPUT
-          echo "pinned=$PINNED" >> $GITHUB_OUTPUT
-          echo "Pinned $PINNED, latest $LATEST"
+          .venv-drift/bin/pip install --quiet "synapse==${{ steps.query.outputs.latest }}"
+          INSTALLED=$(.venv-drift/bin/python -c "import synapse; print('.'.join(str(p) for p in synapse.version))")
+          echo "installed=$INSTALLED" >> $GITHUB_OUTPUT
 
       - name: Regenerate codec vectors against the latest release
         id: vectors
+        if: steps.install.outcome == 'success'
         run: |
           .venv-drift/bin/python tools/genvectors.py > /tmp/vectors-latest.json
           if diff -q Tests/MsgpackTests/vectors.json /tmp/vectors-latest.json > /dev/null; then
@@ -49,11 +66,13 @@ jobs:
       # A version bump alone is worth knowing about; a vector change means the wire
       # format moved and the codec may no longer be correct.
       - name: Open an issue when the wire format or version moved
-        if: steps.vectors.outputs.changed == 'true' || steps.install.outputs.latest != steps.install.outputs.pinned
+        if: steps.vectors.outputs.changed == 'true' || steps.query.outputs.latest != steps.query.outputs.pinned
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          LATEST: ${{ steps.install.outputs.latest }}
-          PINNED: ${{ steps.install.outputs.pinned }}
+          LATEST: ${{ steps.query.outputs.latest }}
+          PINNED: ${{ steps.query.outputs.pinned }}
+          REQUIRES_PYTHON: ${{ steps.query.outputs.requires_python }}
+          INSTALL_OUTCOME: ${{ steps.install.outcome }}
           VECTORS_CHANGED: ${{ steps.vectors.outputs.changed }}
         run: |
           TITLE="Synapse drift: pinned $PINNED, latest $LATEST"
@@ -71,10 +90,19 @@ jobs:
           |---|---|
           | Pinned | \`$PINNED\` |
           | Latest | \`$LATEST\` |
+          | Requires Python | \`$REQUIRES_PYTHON\` |
+          | Install | \`$INSTALL_OUTCOME\` |
           | Codec vectors changed | \`$VECTORS_CHANGED\` |
 
           "
-          if [ "$VECTORS_CHANGED" = "true" ]; then
+          if [ "$INSTALL_OUTCOME" != "success" ]; then
+            BODY="$BODY**The latest release could not be installed on this runner**, most
+          likely because it raised its Python floor to \`$REQUIRES_PYTHON\`. The codec was
+          therefore not re-checked against it. A major version bump may change the
+          protocol itself, not just the packed bytes — review before assuming the
+          client still conforms.
+          "
+          elif [ "$VECTORS_CHANGED" = "true" ]; then
             BODY="$BODY**The packed bytes changed.** The codec may no longer match the
           wire format. Review the diff before bumping.
 
@@ -99,6 +127,8 @@ jobs:
 
       - name: Report
         run: |
-          echo "Pinned:  ${{ steps.install.outputs.pinned }}"
-          echo "Latest:  ${{ steps.install.outputs.latest }}"
+          echo "Pinned:          ${{ steps.query.outputs.pinned }}"
+          echo "Latest:          ${{ steps.query.outputs.latest }}"
+          echo "Requires Python: ${{ steps.query.outputs.requires_python }}"
+          echo "Install:         ${{ steps.install.outcome }}"
           echo "Vectors changed: ${{ steps.vectors.outputs.changed }}"
