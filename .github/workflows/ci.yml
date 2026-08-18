@@ -43,9 +43,16 @@ jobs:
       # here and require them in the integration job below.
       - name: Confirm integration suites skipped deliberately
         run: |
-          swift test 2>&1 | tee test-output.txt
-          grep -q "Suite IntegrationTests skipped" test-output.txt \
-            || { echo "::error::IntegrationTests neither ran nor skipped as expected"; exit 1; }
+          # Capture the status rather than piping to tee, which would report tee's
+          # exit code and hide a failing test run.
+          rc=0
+          swift test > test-output.txt 2>&1 || rc=$?
+          cat test-output.txt
+          if [ "$rc" -ne 0 ]; then exit "$rc"; fi
+          if ! grep -q "Suite IntegrationTests skipped" test-output.txt; then
+            echo "::error::IntegrationTests neither ran nor skipped as expected"
+            exit 1
+          fi
 
   integration:
     name: Integration (${{ matrix.transport }})
@@ -129,19 +136,28 @@ jobs:
           TELEPATH_TLS_HOST: localhost
           TELEPATH_TLS_PORT: "27500"
           TELEPATH_TLS_CLIENTCERT_PORT: "27501"
+        # POSIX sh only: this job runs in a container, where the runner falls back
+        # to `sh -e {0}`. `set -o pipefail` is a bashism and aborts dash outright.
         run: |
-          set -o pipefail
           export TELEPATH_CERT_DIR="$PWD/.testcerts"
           export TELEPATH_CERT_HASH="$(cat .testcerts/certhash)"
-          swift test --filter TLSIntegrationTests 2>&1 | tee tls-output.txt
+
+          rc=0
+          swift test --filter TLSIntegrationTests > tls-output.txt 2>&1 || rc=$?
+          cat tls-output.txt
+          if [ "$rc" -ne 0 ]; then exit "$rc"; fi
+
           # A filter that matches nothing exits 0, and the suite skips itself when
           # TELEPATH_CERT_DIR is unset, so assert the tests actually ran rather
           # than trusting a green exit.
-          grep -q "Suite TLSIntegrationTests passed" tls-output.txt || {
-            echo "::error::TLSIntegrationTests did not run"; exit 1; }
-          grep -q "Suite TLSIntegrationTests skipped" tls-output.txt && {
-            echo "::error::TLSIntegrationTests skipped"; exit 1; }
-          exit 0
+          if ! grep -q "Suite TLSIntegrationTests passed" tls-output.txt; then
+            echo "::error::TLSIntegrationTests did not run"
+            exit 1
+          fi
+          if grep -q "Suite TLSIntegrationTests skipped" tls-output.txt; then
+            echo "::error::TLSIntegrationTests skipped"
+            exit 1
+          fi
 
       - name: Server logs
         if: failure()
