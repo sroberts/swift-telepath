@@ -30,7 +30,9 @@ jobs:
         if: runner.os == 'Linux'
         uses: swift-actions/setup-swift@v2
         with:
-          swift-version: "6.0"
+          # Dependencies (swift-nio, swift-log, swift-certificates) declare tools
+          # versions 6.1 and 6.2, so a 6.0 toolchain cannot resolve the package.
+          swift-version: "6.2"
 
       - name: Build
         run: swift build --build-tests
@@ -57,7 +59,7 @@ jobs:
   integration:
     name: Integration (${{ matrix.transport }})
     runs-on: ubuntu-latest
-    container: swift:6.0-noble
+    container: swift:6.2-noble
     strategy:
       fail-fast: false
       matrix:
@@ -115,7 +117,7 @@ jobs:
   integration-tls:
     name: Integration (TLS)
     runs-on: ubuntu-latest
-    container: swift:6.0-noble
+    container: swift:6.2-noble
     steps:
       - uses: actions/checkout@v4
 
@@ -182,7 +184,7 @@ jobs:
   integration-docker:
     name: Integration (official image)
     runs-on: ubuntu-latest
-    container: swift:6.0-noble
+    container: swift:6.2-noble
     services:
       cortex:
         image: vertexproject/synapse-cortex:v2.249.0
@@ -223,9 +225,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # spec.md M5 asks for published DocC. Warnings here are broken symbol links
-      # and undocumented parameters, which read as "documented" until someone
-      # follows the link, so they fail the build.
+      # spec.md M5 asks for published DocC. This catches both DocC warnings —
+      # broken symbol links and undocumented parameters, which read as
+      # "documented" until someone follows them — and compiler warnings, since
+      # generating documentation compiles the target. Incremental builds do not
+      # re-emit warnings, so a local check can miss what this run catches.
       - name: Build DocC for every public target
         run: |
           set -euo pipefail
@@ -234,7 +238,7 @@ jobs:
             echo "::group::$target"
             swift package generate-documentation --target "$target" 2>&1 | tee "docc-$target.log"
             if grep -q "warning:" "docc-$target.log"; then
-              echo "::error::DocC warnings in $target"
+              echo "::error::warnings while documenting $target"
               grep "warning:" "docc-$target.log"
               failed=1
             fi

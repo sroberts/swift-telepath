@@ -212,9 +212,13 @@ public final class TLSHandshakeHandler: ChannelInboundHandler, RemovableChannelH
     }
 
     public func handlerAdded(context: ChannelHandlerContext) {
+        // Capture the channel, not the context: ChannelHandlerContext is not
+        // Sendable and must not escape into a scheduled closure, even one that
+        // runs on the same event loop.
+        let channel = context.channel
         deadline = context.eventLoop.scheduleTask(in: timeout) { [weak self] in
             self?.settle(.failure(TLSError.handshakeTimedOut))
-            context.close(promise: nil)
+            channel.close(promise: nil)
         }
     }
 

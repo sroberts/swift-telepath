@@ -178,7 +178,7 @@ final class DeadlineFlag: @unchecked Sendable {
     var value = false
 }
 
-extension EventLoopFuture {
+extension EventLoopFuture where Value: Sendable {
     /// Fails with `TelepathError.timedOut` if the future has not completed in time.
     ///
     /// Completion is guarded by a flag so the race between the timer and the
