@@ -136,11 +136,23 @@ jobs:
           TELEPATH_TLS_HOST: localhost
           TELEPATH_TLS_PORT: "27500"
           TELEPATH_TLS_CLIENTCERT_PORT: "27501"
-        # POSIX sh only: this job runs in a container, where the runner falls back
-        # to `sh -e {0}`. `set -o pipefail` is a bashism and aborts dash outright.
+        # POSIX sh only. Every step of this container job runs under
+        # `shell: sh -e {0}` (the non-container jobs get `/usr/bin/bash -e {0}`),
+        # and dash rejects `set -o pipefail` outright with "Illegal option", which
+        # aborted this step before a single test ran. Keep bashisms out of the
+        # container jobs.
         run: |
           export TELEPATH_CERT_DIR="$PWD/.testcerts"
-          export TELEPATH_CERT_HASH="$(cat .testcerts/certhash)"
+
+          # Assigned then exported separately: `export VAR="$(cmd)"` returns
+          # export's status, so a failing command substitution would slip past
+          # `set -e` and the pinning test would fail on an empty hash instead.
+          TELEPATH_CERT_HASH="$(cat .testcerts/certhash)"
+          export TELEPATH_CERT_HASH
+          if [ -z "$TELEPATH_CERT_HASH" ]; then
+            echo "::error::.testcerts/certhash is empty; the TLS environment did not build"
+            exit 1
+          fi
 
           rc=0
           swift test --filter TLSIntegrationTests > tls-output.txt 2>&1 || rc=$?
@@ -149,13 +161,15 @@ jobs:
 
           # A filter that matches nothing exits 0, and the suite skips itself when
           # TELEPATH_CERT_DIR is unset, so assert the tests actually ran rather
-          # than trusting a green exit.
-          if ! grep -q "Suite TLSIntegrationTests passed" tls-output.txt; then
-            echo "::error::TLSIntegrationTests did not run"
+          # than trusting a green exit. The skip check comes first: a skipped suite
+          # emits no "passed" line, so testing for that first would report the
+          # vaguer "did not run" for what is really a gating problem.
+          if grep -q "Suite TLSIntegrationTests skipped" tls-output.txt; then
+            echo "::error::TLSIntegrationTests skipped; check TELEPATH_CERT_DIR"
             exit 1
           fi
-          if grep -q "Suite TLSIntegrationTests skipped" tls-output.txt; then
-            echo "::error::TLSIntegrationTests skipped"
+          if ! grep -q "Suite TLSIntegrationTests passed" tls-output.txt; then
+            echo "::error::TLSIntegrationTests did not run"
             exit 1
           fi
 
