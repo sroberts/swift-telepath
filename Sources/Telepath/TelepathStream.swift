@@ -1,4 +1,5 @@
 import Msgpack
+import NIOCore
 
 /// An in-progress generator call.
 ///
@@ -31,7 +32,9 @@ public struct TelepathStream: AsyncSequence, Sendable {
     public final class Iterator: AsyncIteratorProtocol {
         private enum State {
             case pending
-            case streaming(Link)
+            /// The deadline travels with the link so every yield is bounded, not
+            /// just the call that opened the stream.
+            case streaming(Link, TimeAmount?)
             case finished
         }
 
@@ -53,19 +56,22 @@ public struct TelepathStream: AsyncSequence, Sendable {
 
         public func next() async throws -> MsgpackValue? {
             let link: Link
+            let timeout: TimeAmount?
             switch state {
             case .finished:
                 return nil
             case .pending:
-                link = try await proxy.beginStream(method: method, args: args, kwargs: kwargs, share: share)
-                state = .streaming(link)
-            case .streaming(let existing):
+                (link, timeout) = try await proxy.beginStream(
+                    method: method, args: args, kwargs: kwargs, share: share)
+                state = .streaming(link, timeout)
+            case .streaming(let existing, let existingTimeout):
                 link = existing
+                timeout = existingTimeout
             }
 
             let message: Message
             do {
-                message = try Message(try await link.receiveRequired())
+                message = try Message(try await link.receiveRequired(timeout: timeout))
             } catch {
                 state = .finished
                 await proxy.discard(link)
@@ -109,7 +115,7 @@ public struct TelepathStream: AsyncSequence, Sendable {
             // Early abandonment: Synapse closes the link rather than draining it,
             // and draining an unbounded query to recycle a socket is worse than
             // opening a new one.
-            if case .streaming(let link) = state {
+            if case .streaming(let link, _) = state {
                 let proxy = self.proxy
                 Task { await proxy.discard(link) }
             }

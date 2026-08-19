@@ -119,18 +119,22 @@ final class Link: Sendable {
     }
 
     /// The next message, or nil at a clean end of stream.
-    func receive() async throws -> MsgpackValue? {
+    ///
+    /// `timeout` bounds this single wait, not a whole conversation. A caller that
+    /// times out must close the link rather than pool it: the reply may still
+    /// arrive, and a recycled link would deliver it to the next call.
+    func receive(timeout: TimeAmount? = nil) async throws -> MsgpackValue? {
         try await withCheckedThrowingContinuation { continuation in
             channel.eventLoop.execute { [handler] in
-                handler.take(continuation)
+                handler.take(continuation, timeout: timeout)
             }
         }
     }
 
     /// The next message, treating end of stream as a failure. Used wherever the
     /// protocol guarantees a reply.
-    func receiveRequired() async throws -> MsgpackValue {
-        guard let value = try await receive() else {
+    func receiveRequired(timeout: TimeAmount? = nil) async throws -> MsgpackValue {
+        guard let value = try await receive(timeout: timeout) else {
             throw TelepathError.connectionClosed
         }
         return value
@@ -208,9 +212,17 @@ private struct TLSSetup {
 private final class LinkHandler: ChannelInboundHandler, @unchecked Sendable {
     typealias InboundIn = ByteBuffer
 
+    /// A pending `receive`, with the deadline that will fail it.
+    private struct Waiter {
+        let id: UInt64
+        let continuation: CheckedContinuation<MsgpackValue?, Error>
+        var deadline: Scheduled<Void>?
+    }
+
     private var unpacker = MsgpackStreamUnpacker()
     private var ready: [MsgpackValue] = []
-    private var waiters: [CheckedContinuation<MsgpackValue?, Error>] = []
+    private var waiters: [Waiter] = []
+    private var nextWaiterID: UInt64 = 0
     private var context: ChannelHandlerContext?
     private var failure: (any Error)?
     private var atEOF = false
@@ -225,7 +237,7 @@ private final class LinkHandler: ChannelInboundHandler, @unchecked Sendable {
 
     /// Called on the event loop. Satisfies the waiter immediately when a message is
     /// already decoded, otherwise registers it and asks the channel for more bytes.
-    func take(_ continuation: CheckedContinuation<MsgpackValue?, Error>) {
+    func take(_ continuation: CheckedContinuation<MsgpackValue?, Error>, timeout: TimeAmount?) {
         if !ready.isEmpty {
             continuation.resume(returning: ready.removeFirst())
             return
@@ -238,8 +250,25 @@ private final class LinkHandler: ChannelInboundHandler, @unchecked Sendable {
             continuation.resume(returning: nil)
             return
         }
-        waiters.append(continuation)
+
+        nextWaiterID += 1
+        let id = nextWaiterID
+        var waiter = Waiter(id: id, continuation: continuation, deadline: nil)
+        if let timeout, let context {
+            waiter.deadline = context.eventLoop.scheduleTask(in: timeout) { [weak self] in
+                self?.expire(id)
+            }
+        }
+        waiters.append(waiter)
         context?.read()
+    }
+
+    /// Fails one waiter whose deadline elapsed, leaving any others alone.
+    private func expire(_ id: UInt64) {
+        guard let index = waiters.firstIndex(where: { $0.id == id }) else { return }
+        let waiter = waiters.remove(at: index)
+        waiter.deadline?.cancel()
+        waiter.continuation.resume(throwing: TelepathError.timedOut("waiting for a reply"))
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
@@ -269,7 +298,10 @@ private final class LinkHandler: ChannelInboundHandler, @unchecked Sendable {
     func channelInactive(context: ChannelHandlerContext) {
         atEOF = true
         deliver()
-        for waiter in waiters { waiter.resume(returning: nil) }
+        for waiter in waiters {
+            waiter.deadline?.cancel()
+            waiter.continuation.resume(returning: nil)
+        }
         waiters.removeAll()
         context.fireChannelInactive()
     }
@@ -280,13 +312,18 @@ private final class LinkHandler: ChannelInboundHandler, @unchecked Sendable {
 
     private func deliver() {
         while !waiters.isEmpty && !ready.isEmpty {
-            waiters.removeFirst().resume(returning: ready.removeFirst())
+            let waiter = waiters.removeFirst()
+            waiter.deadline?.cancel()
+            waiter.continuation.resume(returning: ready.removeFirst())
         }
     }
 
     private func fail(context: ChannelHandlerContext, error: any Error) {
         failure = error
-        for waiter in waiters { waiter.resume(throwing: error) }
+        for waiter in waiters {
+            waiter.deadline?.cancel()
+            waiter.continuation.resume(throwing: error)
+        }
         waiters.removeAll()
         context.close(promise: nil)
     }

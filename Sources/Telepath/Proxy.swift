@@ -7,7 +7,18 @@ import TelepathTLS
 
 public struct Config: Sendable {
     public var connectTimeout: Duration = .seconds(10)
-    /// Client-side deadline for a call. Nil means wait indefinitely, matching Synapse.
+    /// Client-side deadline for a single wait on a server message. Nil means wait
+    /// indefinitely, matching Synapse, and is the default.
+    ///
+    /// For a unary call this bounds the whole call, since it is one wait. For a
+    /// generator it bounds the gap *between* yields rather than the total duration,
+    /// because a legitimate Storm query can run for hours; it is a liveness check,
+    /// not a budget. A query that is silent for longer than this fails, so size it
+    /// against the quietest query you expect, or leave it nil and cancel the task
+    /// instead.
+    ///
+    /// A timed-out link is closed rather than pooled: the reply may still arrive,
+    /// and a recycled link would hand it to the next call.
     public var callTimeout: Duration?
     public var poolLowWater: Int = 4
     public var poolHighWater: Int = 12
@@ -45,6 +56,9 @@ public actor Proxy {
     public let protocolVersion: [Int]
 
     public var methods: [String: MethodInfo] { shareInfo.methods }
+
+    /// The per-message deadline, in NIO's units. Nil means wait indefinitely.
+    var callTimeoutAmount: TimeAmount? { config.callTimeout.map(TimeAmount.init) }
     public var serverVersion: [Int]? { shareInfo.synapseVersion }
 
     private static let protocolVersionOurs = [3, 0]
@@ -90,7 +104,8 @@ public actor Proxy {
                 group: eventLoopGroup,
                 timeout: TimeAmount(config.connectTimeout),
                 certificateDirectory: config.certificateDirectory.map { CertificateDirectory(root: $0) })
-            let result = try await Self.handshake(on: link, url: url)
+            let result = try await Self.handshake(
+                on: link, url: url, timeout: TimeAmount(config.connectTimeout))
             let proxy = Proxy(url: url, config: config, group: eventLoopGroup, ownsGroup: ownsGroup,
                               mainLink: link, sessionIden: result.session, shareInfo: result.shareInfo,
                               features: result.features, protocolVersion: result.version)
@@ -109,7 +124,11 @@ public actor Proxy {
         let version: [Int]
     }
 
-    private static func handshake(on link: Link, url: TelepathURL) async throws -> HandshakeResult {
+    private static func handshake(
+        on link: Link,
+        url: TelepathURL,
+        timeout: TimeAmount
+    ) async throws -> HandshakeResult {
         // When a user is supplied without a password, Synapse authenticates from a
         // TLS client certificate and 'auth' stays None.
         var auth: MsgpackValue = .null
@@ -126,7 +145,8 @@ public actor Proxy {
             ]),
         ]))
 
-        let message = try Message(try await link.receiveRequired())
+        // The handshake is bounded by the connect timeout, not the call timeout.
+        let message = try Message(try await link.receiveRequired(timeout: timeout))
         guard message.name == "tele:syn" else {
             throw TelepathError.handshakeFailed("expected tele:syn, got \(message.name)")
         }
@@ -182,7 +202,7 @@ public actor Proxy {
         let link = try await takeLink()
         do {
             try await link.send(Self.taskInit(method, args, kwargs, share: share, session: sessionIden))
-            let message = try Message(try await link.receiveRequired())
+            let message = try Message(try await link.receiveRequired(timeout: callTimeoutAmount))
 
             switch message.name {
             case "t2:fini":
@@ -256,14 +276,15 @@ public actor Proxy {
         args: [MsgpackValue],
         kwargs: [String: MsgpackValue],
         share: String?
-    ) async throws -> Link {
+    ) async throws -> (link: Link, timeout: TimeAmount?) {
         let link = try await takeLink()
         do {
             try await link.send(Self.taskInit(method, args, kwargs, share: share, session: sessionIden))
-            let message = try Message(try await link.receiveRequired())
+            let message = try Message(try await link.receiveRequired(timeout: callTimeoutAmount))
             switch message.name {
             case "t2:genr":
-                return link
+                // Handed out with the deadline so each yield is bounded too.
+                return (link, callTimeoutAmount)
             case "t2:fini":
                 // A non-generator method reached stream(); surface its result shape.
                 guard let retn = message["retn"] else {

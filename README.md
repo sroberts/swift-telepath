@@ -239,6 +239,17 @@ semantically unordered and Synapse unpacks them into a `dict`, so this carries n
 protocol meaning — but it does mean the bytes are not reproducible for anything
 that hashes a packed map. Everything else re-encodes byte for byte.
 
+**`callTimeout` bounds each wait, not each call.** `Config.callTimeout` is nil by
+default, matching Synapse, which has no client-side deadline. When set, it bounds
+a single wait for a server message. For a unary call that is the whole call, since
+it is one wait. For a generator it bounds the gap *between* yields rather than the
+total duration, because a legitimate Storm query can run for hours — it is a
+liveness check, not a budget. Size it against the quietest query you expect, or
+leave it nil and cancel the task instead.
+
+A timed-out link is closed rather than returned to the pool. The reply may still
+arrive, and a recycled link would hand another call's result to the next caller.
+
 **Abandoned generators close their link.** Synapse closes rather than draining,
 and so does this client: reading an unbounded Storm result set to recycle a socket
 costs far more than opening a new connection.
@@ -251,11 +262,10 @@ server instead of filling a userspace buffer.
 
 - **Dynamic shares** (`t2:share`). Detected and reported, not supported.
 - **`aha://` resolution**, mirror pools, `dynmirror`.
-- **Pool low-water prefill.** Links are opened on demand and culled above the high
-  water mark; Synapse's background refill to 4 idle links is not replicated.
 - **Reconnect.** A dropped main link surfaces as an error rather than
   re-handshaking. Deliberate: silently re-handshaking loses server-side share
   state and would loop after a credential rotation.
-- **`Config.callTimeout`.** Declared but not enforced; a call currently waits
-  indefinitely. `Config.poolLowWater` is likewise inert.
+- **Pool low-water prefill.** `Config.poolLowWater` is inert: links are opened on
+  demand and culled above the high water mark, but Synapse's background refill to
+  four idle links is not replicated.
 - **Server side.** Out of scope.

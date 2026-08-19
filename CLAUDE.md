@@ -117,9 +117,10 @@ Integration suites skip when no server is configured. **CI must set `TELEPATH_RE
 - **Maps do not round-trip byte-exactly.** Swift `Dictionary` is unordered, so re-encoding permutes map keys. Held to semantic equality plus identical encoded length in `VectorTests`. Everything else is byte-exact; do not "fix" a failing map round-trip by weakening the non-map assertions.
 - **A dropped link surfaces as an error**; `Proxy` does not re-handshake. Re-handshaking loses server-side share state and loops after a credential rotation.
 - **Abandoned generators close their link** rather than draining.
+- **`callTimeout` bounds one wait, not one call.** Nil by default. For a generator that means the gap between yields, not total duration — a Storm query may legitimately run for hours. A timed-out link is **closed, never pooled**: the late reply would otherwise be delivered to the next call on that link. `CallTimeoutTests.lateReplyDoesNotDesync` covers exactly that, and fails if the link is released instead of closed.
 - **Integers compare numerically across cases.** msgpack draws no wire distinction between signed and unsigned, so `.int(0)` decodes as `.uint(0)`; `MsgpackValue`'s `Equatable`/`Hashable` are hand-written so equal numbers compare and hash equally, `.bigInt` included. Found by fuzzing. Do not revert to a derived conformance.
 
-`Config.callTimeout` and `Config.poolLowWater` are declared but never read — dead options that silently promise behavior. Fix or remove them rather than leaving them.
+`Config.poolLowWater` is still declared but never read — links open on demand and are culled above the high water mark, but nothing prefills to the low water mark. Implement it or remove it rather than leaving a dead option that promises behavior.
 
 Still open from spec §8: `Proxy.state` as an `AsyncStream`, and per-platform pool water marks (the Python 4/12 defaults are likely wrong for iOS on cellular, and `Config` already makes them configurable).
 
