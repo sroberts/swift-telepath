@@ -112,21 +112,43 @@ final class Link: Sendable {
         return Link(channel: channel, handler: handler)
     }
 
-    func send(_ value: MsgpackValue) async throws {
+    /// Writes a message, bounded by `timeout`.
+    ///
+    /// The read side is not the only place a call can stall: a peer that accepts
+    /// the connection and stops reading fills the TCP window, and an unbounded
+    /// write would then block a call that has a deadline set.
+    func send(_ value: MsgpackValue, timeout: TimeAmount? = nil) async throws {
         var buffer = channel.allocator.buffer(capacity: 256)
         buffer.writeBytes(MsgpackPacker.encode(value))
-        try await channel.writeAndFlush(buffer).get()
+        let write: EventLoopFuture<Void> = channel.writeAndFlush(buffer)
+        guard let timeout else {
+            return try await write.get()
+        }
+        try await write.withDeadline(timeout, on: channel.eventLoop,
+                                     message: "sending a request").get()
     }
 
     /// The next message, or nil at a clean end of stream.
     ///
     /// `timeout` bounds this single wait, not a whole conversation. A caller that
-    /// times out must close the link rather than pool it: the reply may still
-    /// arrive, and a recycled link would deliver it to the next call.
+    /// times out — or cancels — must close the link rather than pool it: the reply
+    /// may still arrive, and a recycled link would deliver it to the next call.
+    ///
+    /// Cancellation is honoured. A bare `withCheckedThrowingContinuation` ignores
+    /// it, which left a cancelled call suspended until the server replied or the
+    /// socket dropped.
     func receive(timeout: TimeAmount? = nil) async throws -> MsgpackValue? {
-        try await withCheckedThrowingContinuation { continuation in
-            channel.eventLoop.execute { [handler] in
-                handler.take(continuation, timeout: timeout)
+        let token = WaiterToken()
+        let eventLoop = channel.eventLoop
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                eventLoop.execute { [handler] in
+                    handler.take(continuation, token: token, timeout: timeout, on: eventLoop)
+                }
+            }
+        } onCancel: {
+            eventLoop.execute { [handler] in
+                handler.cancel(token: token)
             }
         }
     }
@@ -142,6 +164,45 @@ final class Link: Sendable {
 
     func close() async {
         try? await channel.close().get()
+    }
+}
+
+/// Identity for one pending `receive`, so a deadline or a cancellation can find
+/// exactly its own waiter. State is confined to the channel's event loop.
+final class WaiterToken: @unchecked Sendable {
+    var isCancelled = false
+}
+
+/// Guards the race between a deadline and the work it bounds. Event-loop confined.
+final class DeadlineFlag: @unchecked Sendable {
+    var value = false
+}
+
+extension EventLoopFuture {
+    /// Fails with `TelepathError.timedOut` if the future has not completed in time.
+    ///
+    /// Completion is guarded by a flag so the race between the timer and the
+    /// future cannot complete the promise twice, which would trap.
+    func withDeadline(
+        _ timeout: TimeAmount,
+        on eventLoop: EventLoop,
+        message: String
+    ) -> EventLoopFuture<Value> {
+        let settled = DeadlineFlag()
+        let promise = eventLoop.makePromise(of: Value.self)
+
+        let scheduled = eventLoop.scheduleTask(in: timeout) {
+            guard !settled.value else { return }
+            settled.value = true
+            promise.fail(TelepathError.timedOut(message))
+        }
+        hop(to: eventLoop).whenComplete { result in
+            scheduled.cancel()
+            guard !settled.value else { return }
+            settled.value = true
+            promise.completeWith(result)
+        }
+        return promise.futureResult
     }
 }
 
@@ -214,7 +275,7 @@ private final class LinkHandler: ChannelInboundHandler, @unchecked Sendable {
 
     /// A pending `receive`, with the deadline that will fail it.
     private struct Waiter {
-        let id: UInt64
+        let token: WaiterToken
         let continuation: CheckedContinuation<MsgpackValue?, Error>
         var deadline: Scheduled<Void>?
     }
@@ -222,7 +283,6 @@ private final class LinkHandler: ChannelInboundHandler, @unchecked Sendable {
     private var unpacker = MsgpackStreamUnpacker()
     private var ready: [MsgpackValue] = []
     private var waiters: [Waiter] = []
-    private var nextWaiterID: UInt64 = 0
     private var context: ChannelHandlerContext?
     private var failure: (any Error)?
     private var atEOF = false
@@ -237,7 +297,18 @@ private final class LinkHandler: ChannelInboundHandler, @unchecked Sendable {
 
     /// Called on the event loop. Satisfies the waiter immediately when a message is
     /// already decoded, otherwise registers it and asks the channel for more bytes.
-    func take(_ continuation: CheckedContinuation<MsgpackValue?, Error>, timeout: TimeAmount?) {
+    func take(
+        _ continuation: CheckedContinuation<MsgpackValue?, Error>,
+        token: WaiterToken,
+        timeout: TimeAmount?,
+        on eventLoop: EventLoop
+    ) {
+        // Cancellation can win the race to the event loop, arriving before the
+        // waiter is even registered.
+        if token.isCancelled {
+            continuation.resume(throwing: CancellationError())
+            return
+        }
         if !ready.isEmpty {
             continuation.resume(returning: ready.removeFirst())
             return
@@ -251,12 +322,13 @@ private final class LinkHandler: ChannelInboundHandler, @unchecked Sendable {
             return
         }
 
-        nextWaiterID += 1
-        let id = nextWaiterID
-        var waiter = Waiter(id: id, continuation: continuation, deadline: nil)
-        if let timeout, let context {
-            waiter.deadline = context.eventLoop.scheduleTask(in: timeout) { [weak self] in
-                self?.expire(id)
+        var waiter = Waiter(token: token, continuation: continuation, deadline: nil)
+        // Scheduled on the event loop rather than the handler context: a nil
+        // context would otherwise mean a configured timeout is silently dropped
+        // and the caller waits forever.
+        if let timeout {
+            waiter.deadline = eventLoop.scheduleTask(in: timeout) { [weak self] in
+                self?.expire(token)
             }
         }
         waiters.append(waiter)
@@ -264,11 +336,20 @@ private final class LinkHandler: ChannelInboundHandler, @unchecked Sendable {
     }
 
     /// Fails one waiter whose deadline elapsed, leaving any others alone.
-    private func expire(_ id: UInt64) {
-        guard let index = waiters.firstIndex(where: { $0.id == id }) else { return }
+    private func expire(_ token: WaiterToken) {
+        guard let index = waiters.firstIndex(where: { $0.token === token }) else { return }
         let waiter = waiters.remove(at: index)
         waiter.deadline?.cancel()
         waiter.continuation.resume(throwing: TelepathError.timedOut("waiting for a reply"))
+    }
+
+    /// Fails one waiter because its task was cancelled.
+    func cancel(token: WaiterToken) {
+        token.isCancelled = true
+        guard let index = waiters.firstIndex(where: { $0.token === token }) else { return }
+        let waiter = waiters.remove(at: index)
+        waiter.deadline?.cancel()
+        waiter.continuation.resume(throwing: CancellationError())
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {

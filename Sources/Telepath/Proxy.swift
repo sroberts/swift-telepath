@@ -98,12 +98,17 @@ public actor Proxy {
     ) async throws -> Proxy {
         let eventLoopGroup = group ?? MultiThreadedEventLoopGroup(numberOfThreads: 1)
         let ownsGroup = group == nil
+        // Tracked so a handshake failure closes the socket. Shutting down the event
+        // loop group only cleans up when the group is ours, which leaked a live
+        // channel per attempt for callers supplying their own.
+        var connected: Link?
         do {
             let link = try await Link.connect(
                 to: url,
                 group: eventLoopGroup,
                 timeout: TimeAmount(config.connectTimeout),
                 certificateDirectory: config.certificateDirectory.map { CertificateDirectory(root: $0) })
+            connected = link
             let result = try await Self.handshake(
                 on: link, url: url, timeout: TimeAmount(config.connectTimeout))
             let proxy = Proxy(url: url, config: config, group: eventLoopGroup, ownsGroup: ownsGroup,
@@ -112,6 +117,7 @@ public actor Proxy {
             await proxy.startCulling()
             return proxy
         } catch {
+            await connected?.close()
             if ownsGroup { try? await eventLoopGroup.shutdownGracefully() }
             throw error
         }
@@ -143,7 +149,7 @@ public actor Proxy {
                 .string("vers"): .array([.uint(3), .uint(0)]),
                 .string("name"): .string(url.share),
             ]),
-        ]))
+        ]), timeout: timeout)
 
         // The handshake is bounded by the connect timeout, not the call timeout.
         let message = try Message(try await link.receiveRequired(timeout: timeout))
@@ -201,7 +207,8 @@ public actor Proxy {
     ) async throws -> MsgpackValue {
         let link = try await takeLink()
         do {
-            try await link.send(Self.taskInit(method, args, kwargs, share: share, session: sessionIden))
+            try await link.send(Self.taskInit(method, args, kwargs, share: share, session: sessionIden),
+                                timeout: callTimeoutAmount)
             let message = try Message(try await link.receiveRequired(timeout: callTimeoutAmount))
 
             switch message.name {
@@ -279,7 +286,8 @@ public actor Proxy {
     ) async throws -> (link: Link, timeout: TimeAmount?) {
         let link = try await takeLink()
         do {
-            try await link.send(Self.taskInit(method, args, kwargs, share: share, session: sessionIden))
+            try await link.send(Self.taskInit(method, args, kwargs, share: share, session: sessionIden),
+                                timeout: callTimeoutAmount)
             let message = try Message(try await link.receiveRequired(timeout: callTimeoutAmount))
             switch message.name {
             case "t2:genr":

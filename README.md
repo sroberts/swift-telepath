@@ -245,10 +245,17 @@ a single wait for a server message. For a unary call that is the whole call, sin
 it is one wait. For a generator it bounds the gap *between* yields rather than the
 total duration, because a legitimate Storm query can run for hours — it is a
 liveness check, not a budget. Size it against the quietest query you expect, or
-leave it nil and cancel the task instead.
+leave it nil and cancel the task instead — **task cancellation is honoured**, so
+`withThrowingTaskGroup`, a parent task's cancellation, or a test's time limit all
+unblock a call waiting on a server.
 
-A timed-out link is closed rather than returned to the pool. The reply may still
-arrive, and a recycled link would hand another call's result to the next caller.
+Writes are bounded by the same deadline, since a peer that accepts the connection
+and stops reading fills the TCP window and would otherwise stall a call before it
+ever waited for a reply.
+
+A link that timed out or was cancelled is closed rather than returned to the pool.
+The reply may still arrive, and a recycled link would hand another call's result
+to the next caller.
 
 **Abandoned generators close their link.** Synapse closes rather than draining,
 and so does this client: reading an unbounded Storm result set to recycle a socket
