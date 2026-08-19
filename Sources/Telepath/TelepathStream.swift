@@ -27,6 +27,12 @@ public struct TelepathStream: AsyncSequence, Sendable {
         return items
     }
 
+    /// Decodes each element, preserving laziness: nothing is decoded until it is
+    /// iterated, so a large stream stays bounded in memory.
+    public func decode<T: Decodable>(_ type: T.Type) -> DecodedStream<T> {
+        DecodedStream(base: self, decoder: MsgpackDecoder())
+    }
+
     /// A class rather than a struct so that abandoning a stream early has a
     /// deterministic hook: `deinit` closes the link instead of leaking it.
     public final class Iterator: AsyncIteratorProtocol {
@@ -119,6 +125,35 @@ public struct TelepathStream: AsyncSequence, Sendable {
                 let proxy = self.proxy
                 Task { await proxy.discard(link) }
             }
+        }
+    }
+}
+
+
+/// A ``TelepathStream`` whose elements are decoded into a `Decodable` type.
+public struct DecodedStream<T: Decodable>: AsyncSequence, Sendable {
+    public typealias Element = T
+
+    let base: TelepathStream
+    let decoder: MsgpackDecoder
+
+    public func makeAsyncIterator() -> Iterator {
+        Iterator(base: base.makeAsyncIterator(), decoder: decoder)
+    }
+
+    public func collect() async throws -> [T] {
+        var items: [T] = []
+        for try await item in self { items.append(item) }
+        return items
+    }
+
+    public struct Iterator: AsyncIteratorProtocol {
+        var base: TelepathStream.Iterator
+        let decoder: MsgpackDecoder
+
+        public mutating func next() async throws -> T? {
+            guard let value = try await base.next() else { return nil }
+            return try decoder.decode(T.self, from: value)
         }
     }
 }

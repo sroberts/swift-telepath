@@ -218,3 +218,89 @@ struct StreamVolumeTests {
         #expect(try await cortex.callStorm("return((7))", returning: Int.self) == 7)
     }
 }
+
+/// User and role administration against a live Cortex.
+@Suite(.enabled(if: IntegrationEnvironment.shouldRun))
+struct AuthTests {
+    private func withCortex<T>(_ body: (Cortex) async throws -> T) async throws -> T {
+        let cortex = try await Cortex.open(try IntegrationEnvironment.requireURL())
+        do {
+            let result = try await body(cortex)
+            await cortex.close()
+            return result
+        } catch {
+            await cortex.close()
+            throw error
+        }
+    }
+
+    @Test("the session's own user is reported")
+    func cellUser() async throws {
+        try await withCortex { cortex in
+            let user = try await cortex.getCellUser()
+            #expect(!user.iden.isEmpty)
+            #expect(!user.name.isEmpty)
+        }
+    }
+
+    @Test("users can be created, inspected, modified and deleted")
+    func userLifecycle() async throws {
+        try await withCortex { cortex in
+            let name = "telepath-test-\(UInt32.random(in: 0..<UInt32.max))"
+
+            let created = try await cortex.addUser(name, password: "hunter2")
+            #expect(created.name == name)
+            #expect(created.iden.count == 32)
+
+            let byName = try await cortex.getUserDef(name: name)
+            #expect(byName?.iden == created.iden)
+
+            let byIden = try await cortex.getUserDef(iden: created.iden)
+            #expect(byIden?.name == name)
+
+            try await cortex.setUserAdmin(iden: created.iden, true)
+            #expect(try await cortex.getUserDef(iden: created.iden)?.admin == true)
+
+            try await cortex.setUserLocked(iden: created.iden, true)
+            #expect(try await cortex.getUserDef(iden: created.iden)?.locked == true)
+
+            #expect(try await cortex.getUserDefs().contains { $0.iden == created.iden })
+
+            try await cortex.deleteUser(iden: created.iden)
+            #expect(try await cortex.getUserDef(name: name) == nil)
+        }
+    }
+
+    @Test("roles can be created, assigned and removed")
+    func roleLifecycle() async throws {
+        try await withCortex { cortex in
+            let suffix = UInt32.random(in: 0..<UInt32.max)
+            let user = try await cortex.addUser("telepath-role-user-\(suffix)")
+            let role = try await cortex.addRole("telepath-role-\(suffix)")
+            #expect(role.iden.count == 32)
+
+            try await cortex.addUserRole(userIden: user.iden, roleIden: role.iden)
+            #expect(try await cortex.getUserDef(iden: user.iden)?.hasRole(iden: role.iden) == true)
+
+            try await cortex.deleteUserRole(userIden: user.iden, roleIden: role.iden)
+            #expect(try await cortex.getUserDef(iden: user.iden)?.hasRole(iden: role.iden) == false)
+            // The implicit "all" role stays; only the granted one is removed.
+            #expect(try await cortex.getUserDef(iden: user.iden)?.roles?.isEmpty == false)
+
+            #expect(try await cortex.getRoleDefs().contains { $0.iden == role.iden })
+
+            try await cortex.deleteRole(iden: role.iden)
+            try await cortex.deleteUser(iden: user.iden)
+        }
+    }
+
+    /// Synapse expresses authorisation as dotted permission paths.
+    @Test("permission checks resolve")
+    func permissions() async throws {
+        try await withCortex { cortex in
+            let me = try await cortex.getCellUser()
+            // root is an admin, so anything is permitted.
+            #expect(try await cortex.isUserAllowed(iden: me.iden, permission: ["node", "add"]))
+        }
+    }
+}

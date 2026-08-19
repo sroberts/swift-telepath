@@ -128,4 +128,6 @@ public enum TelepathError: Error, Sendable, Equatable {
     case timedOut(String)
     /// An ext code other than 0 or 1 reached the Telepath layer.
     case unexpectedExtType(Int8)
+    /// A call was made on a share that has already been released.
+    case shareClosed(String)
 }

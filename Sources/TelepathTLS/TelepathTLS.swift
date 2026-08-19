@@ -194,11 +194,15 @@ public final class TLSHandshakeHandler: ChannelInboundHandler, RemovableChannelH
     private var deadline: Scheduled<Void>?
     private var settled = false
 
-    /// - Parameter expectedHostname: nil when a pinned fingerprint already
-    ///   identifies the peer, matching Synapse's `if certhash ... elif hostname`.
-    /// - Parameter timeout: connect timeouts stop applying once the TCP connection
-    ///   is up, so a peer that accepts and then never speaks TLS would hang the
-    ///   caller forever without this.
+    /// - Parameters:
+    ///   - expectedHostname: nil when a pinned fingerprint already identifies the peer.
+    ///   - promise: fulfilled when the handshake completes or fails, so the
+    ///     connecting caller sees the real error rather than a later write failure.
+    ///   - failure: carries the verification callback's reason out of BoringSSL,
+    ///     which would otherwise collapse it to a generic verification failure.
+    ///   - timeout: connect timeouts stop applying once the TCP connection is up,
+    ///     so a peer that accepts and then never speaks TLS would hang the caller
+    ///     forever without this.
     public init(expectedHostname: String?, promise: EventLoopPromise<Void>,
                 failure: TLSVerificationFailure, timeout: TimeAmount) {
         self.expectedHostname = expectedHostname

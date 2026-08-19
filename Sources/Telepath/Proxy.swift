@@ -59,6 +59,10 @@ public actor Proxy {
     private var idleLinks: [Link] = []
     private var closed = false
     private var cullTask: Task<Void, Never>?
+    private var mainLinkTask: Task<Void, Never>?
+    /// Links being opened in the background, counted so a burst of calls cannot
+    /// stack up an unbounded number of connection attempts.
+    private var pendingFills = 0
 
     /// The session iden from the handshake. Pool links skip the handshake entirely,
     /// so this value is the only thing binding them to an authenticated session.
@@ -68,6 +72,9 @@ public actor Proxy {
     public let protocolVersion: [Int]
 
     public var methods: [String: MethodInfo] { shareInfo.methods }
+
+    /// Idle links currently pooled. Exposed for tests and diagnostics.
+    public var idleLinkCount: Int { idleLinks.count }
 
     /// The per-message deadline, in NIO's units. Nil means wait indefinitely.
     var callTimeoutAmount: TimeAmount? { config.callTimeout.map(TimeAmount.init) }
@@ -127,6 +134,7 @@ public actor Proxy {
                               mainLink: link, sessionIden: result.session, shareInfo: result.shareInfo,
                               features: result.features, protocolVersion: result.version)
             await proxy.startCulling()
+            await proxy.startMainLinkReader()
             return proxy
         } catch {
             await connected?.close()
@@ -260,6 +268,35 @@ public actor Proxy {
         }
     }
 
+    /// Issues a unary call and decodes its result.
+    public func call<T: Decodable>(
+        _ method: String,
+        _ args: [MsgpackValue] = [],
+        kwargs: [String: MsgpackValue] = [:],
+        share: String? = nil,
+        returning type: T.Type
+    ) async throws -> T {
+        let value = try await call(method, args, kwargs: kwargs, share: share)
+        return try MsgpackDecoder().decode(type, from: value)
+    }
+
+    /// Issues a unary call with `Encodable` arguments, so callers can pass Swift
+    /// values rather than hand-building `MsgpackValue` trees.
+    public func call(
+        _ method: String,
+        encoding args: [any Encodable],
+        kwargs: [String: any Encodable] = [:],
+        share: String? = nil
+    ) async throws -> MsgpackValue {
+        let encoder = MsgpackEncoder()
+        return try await call(
+            method,
+            try args.map { try encoder.encode($0) },
+            kwargs: try kwargs.mapValues { try encoder.encode($0) },
+            share: share
+        )
+    }
+
     /// Issues a generator call. The `t2:init` is not sent until the first iteration,
     /// matching Synapse's GenrIter, so constructing a stream is free.
     public nonisolated func stream(
@@ -288,6 +325,62 @@ public actor Proxy {
                 .string("sess"): .string(session),
             ]),
         ])
+    }
+
+    /// Issues a call expected to return a dynamically shared object.
+    ///
+    /// Unlike a generator, the link is free the moment the reply lands: the share
+    /// is addressed by iden on later calls rather than by holding a connection.
+    public func callForShare(
+        _ method: String,
+        _ args: [MsgpackValue] = [],
+        kwargs: [String: MsgpackValue] = [:],
+        share: String? = nil
+    ) async throws -> Share {
+        let link = try await takeLink()
+        do {
+            try await link.send(Self.taskInit(method, args, kwargs, share: share, session: sessionIden),
+                                timeout: callTimeoutAmount)
+            let message = try Message(try await link.receiveRequired(timeout: callTimeoutAmount))
+
+            switch message.name {
+            case "t2:share":
+                guard let iden = message["iden"]?.stringValue else {
+                    throw TelepathError.protocolViolation("t2:share carried no iden")
+                }
+                await release(link)
+                return Share(proxy: self, iden: iden,
+                             shareInfo: ShareInfo(message["sharinfo"] ?? .null))
+
+            case "t2:fini":
+                guard let retn = message["retn"] else {
+                    throw TelepathError.protocolViolation("t2:fini carried no retn")
+                }
+                _ = try Retn.unwrap(retn)
+                await release(link)
+                throw TelepathError.protocolViolation(
+                    "'\(method)' returned a value, not a share; call call(_:) instead")
+
+            default:
+                await link.close()
+                throw TelepathError.protocolViolation("unexpected reply to t2:init: \(message.name)")
+            }
+        } catch let error as TelepathRemoteError {
+            await release(link)
+            throw error
+        } catch {
+            await link.close()
+            throw error
+        }
+    }
+
+    /// Releases a share. `share:fini` travels on the main link, never a pool link.
+    func finishShare(_ iden: String) async {
+        guard !closed else { return }
+        try? await mainLink.send(.array([
+            .string("share:fini"),
+            .map([.string("share"): .string(iden)]),
+        ]), timeout: callTimeoutAmount)
     }
 
     /// Opens a generator call and hands the caller its exclusively-owned link.
@@ -334,6 +427,7 @@ public actor Proxy {
     /// straight to `t2:init` carrying the session iden.
     private func takeLink() async throws -> Link {
         guard !closed else { throw TelepathError.proxyClosed }
+        defer { refillPool() }
         while let link = idleLinks.popLast() {
             if link.isActive { return link }
         }
@@ -362,6 +456,91 @@ public actor Proxy {
         await link.close()
     }
 
+    /// Opens replacements in the background when idle links fall below the low
+    /// water mark, matching Synapse.
+    ///
+    /// Deliberately reactive rather than eager: filling only after a link has been
+    /// taken means a proxy that is never called never opens spare connections,
+    /// which matters for a client on a metered link. The default marks are
+    /// Synapse's and are configurable precisely because they suit a server better
+    /// than a phone.
+    private func refillPool() {
+        guard !closed else { return }
+        let wanted = config.poolLowWater - (idleLinks.count + pendingFills)
+        guard wanted > 0 else { return }
+
+        pendingFills += wanted
+        for _ in 0..<wanted {
+            Task { [weak self] in
+                guard let self else { return }
+                await self.fillOneLink()
+            }
+        }
+    }
+
+    /// Opens one spare link. Failures are swallowed: a background top-up must not
+    /// surface an error to a caller who never asked for this connection.
+    private func fillOneLink() async {
+        defer { pendingFills -= 1 }
+        guard !closed else { return }
+        guard let link = try? await Link.connect(
+            to: url,
+            group: group,
+            timeout: TimeAmount(config.connectTimeout),
+            certificateDirectory: config.certificateDirectory.map { CertificateDirectory(root: $0) })
+        else { return }
+
+        // The proxy may have closed while this was connecting.
+        guard !closed, idleLinks.count < config.poolHighWater else {
+            await link.close()
+            return
+        }
+        idleLinks.append(link)
+    }
+
+    /// Consumes the main link.
+    ///
+    /// Nothing read it before, which was survivable only because a task-v2 server
+    /// sends nothing there — but the link disables autoRead, so an unread main link
+    /// would eventually stall a server that did write to it. Shares make that real.
+    ///
+    /// Unknown message names are logged and dropped rather than treated as errors:
+    /// spec 3.4 is explicit that an unrecognised main-link message must not close
+    /// the connection, and new ones appear between Synapse releases.
+    private func startMainLinkReader() {
+        mainLinkTask = Task { [weak self] in
+            guard let self else { return }
+            await self.readMainLink()
+        }
+    }
+
+    private func readMainLink() async {
+        while !closed {
+            let value: MsgpackValue?
+            do {
+                value = try await mainLink.receive()
+            } catch {
+                // The main link died; the session is gone with it.
+                config.logger.debug("main link closed: \(error)")
+                return
+            }
+            guard let value else { return }   // clean end of stream
+
+            guard let message = try? Message(value) else {
+                config.logger.warning("unparseable message on the main link")
+                continue
+            }
+            switch message.name {
+            case "share:data", "share:fini":
+                // Task v1 share traffic. Nothing consumes it yet; dropping it is
+                // correct for a task-v2-only client.
+                config.logger.debug("main link: \(message.name)")
+            default:
+                config.logger.info("ignoring unknown main link message: \(message.name)")
+            }
+        }
+    }
+
     private func startCulling() {
         let interval = config.poolCullInterval
         cullTask = Task { [weak self] in
@@ -385,6 +564,7 @@ public actor Proxy {
         guard !closed else { return }
         closed = true
         cullTask?.cancel()
+        mainLinkTask?.cancel()
         for link in idleLinks { await link.close() }
         idleLinks.removeAll()
         await mainLink.close()

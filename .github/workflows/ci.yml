@@ -217,6 +217,31 @@ jobs:
           TELEPATH_REQUIRE_INTEGRATION: "1"
         run: swift test
 
+  docs:
+    name: Documentation
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      # spec.md M5 asks for published DocC. Warnings here are broken symbol links
+      # and undocumented parameters, which read as "documented" until someone
+      # follows the link, so they fail the build.
+      - name: Build DocC for every public target
+        run: |
+          set -euo pipefail
+          failed=0
+          for target in Msgpack Telepath Synapse TelepathTLS; do
+            echo "::group::$target"
+            swift package generate-documentation --target "$target" 2>&1 | tee "docc-$target.log"
+            if grep -q "warning:" "docc-$target.log"; then
+              echo "::error::DocC warnings in $target"
+              grep "warning:" "docc-$target.log"
+              failed=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "$failed"
+
   fuzz:
     name: Fuzz (short)
     runs-on: macos-15

@@ -157,7 +157,8 @@ extension MsgpackValue {
     }
 
     /// Narrows either integer case to `Int64`, returning nil when the value does not
-    /// fit. Big integers always return nil; reach for ``bigInt`` explicitly there.
+    /// fit. Big integers always return nil; reach for ``MsgpackValue/bigInt(sign:magnitude:)``
+    /// explicitly there.
     public var intValue: Int64? {
         switch self {
         case .int(let i): return i

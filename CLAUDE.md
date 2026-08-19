@@ -17,6 +17,7 @@ Telepath has **no published specification** — it is defined by its Python impl
 ```bash
 swift build
 swift test                                   # unit tests; integration suites skip themselves
+swift package generate-documentation --target Telepath   # DocC; CI fails on warnings
 swift test --filter VectorTests              # one suite
 swift test --filter DecoderTests.overflow    # one test
 ```
@@ -58,7 +59,7 @@ Note: Synapse refuses to start a cell when the disk is near full; `scripts/run-t
 Sources/Msgpack/    # value model, packer, unpacker, streaming unpacker, Codable decoder
                     # NO package dependencies and no Foundation — must stay extractable
 Sources/Telepath/   # TelepathURL, Link (NIO), Proxy (actor: handshake + pool + calls),
-                    # TelepathStream, errors, retn decoding      → Msgpack, NIO, Logging
+                    # TelepathStream, Share, errors, retn decoding → Msgpack, NIO, Logging
 Sources/TelepathTLS/  # cert directory, pinning, CN check      → NIOSSL, Crypto, X509
 Sources/Synapse/    # Cortex facade, Storm message model, Node   → Telepath
 Sources/TelepathTestKit/  # scriptable daemon, integration gating
@@ -83,7 +84,7 @@ These are the things that break silently if violated. They are cross-cutting, so
 
 **Pool links skip the handshake.** They connect and send `t2:init` carrying the session iden obtained on the main link. The `sess` value is the only thing binding a pool link to an authenticated session, which is why handshake `sess` absence (pre-2.166 server, task v1) must fail loudly rather than degrade.
 
-**Share teardown goes on the main link.** `share:fini` is sent on the handshake link, not a pool link. Unknown message names arriving on the main link are logged and dropped — never close the connection over one.
+**Share teardown goes on the main link.** `share:fini` is sent on the handshake link, not a pool link — `ShareTests.teardownUsesMainLink` asserts the connection identity, not just the message. A share's *call* link is released as soon as the `t2:share` reply lands, unlike a generator's. The main link now has a permanent reader: unknown message names there are logged and dropped, never fatal, because the link disables `autoRead` and an unread main link would eventually stall a server that wrote to it.
 
 **Errors are `retn` tuples, not exceptions.** `(True, value)` or `(False, (excName, infoMap))` everywhere. Map to a single `TelepathRemoteError` carrying the name string plus decoded info; never mirror Synapse's exception hierarchy, and never fail decoding because a name is unrecognized (`.other(String)` case is required).
 
@@ -121,7 +122,7 @@ Integration suites skip when no server is configured. **CI must set `TELEPATH_RE
 - **`callTimeout` bounds one wait, not one call.** Nil by default. For a generator that means the gap between yields, not total duration — a Storm query may legitimately run for hours. A timed-out link is **closed, never pooled**: the late reply would otherwise be delivered to the next call on that link. `CallTimeoutTests.lateReplyDoesNotDesync` covers exactly that, and fails if the link is released instead of closed.
 - **Integers compare numerically across cases.** msgpack draws no wire distinction between signed and unsigned, so `.int(0)` decodes as `.uint(0)`; `MsgpackValue`'s `Equatable`/`Hashable` are hand-written so equal numbers compare and hash equally, `.bigInt` included. Found by fuzzing. Do not revert to a derived conformance.
 
-`Config.poolLowWater` is still declared but never read — links open on demand and are culled above the high water mark, but nothing prefills to the low water mark. Implement it or remove it rather than leaving a dead option that promises behavior.
+Pool prefill is deliberately **reactive**: links top up toward `poolLowWater` only after one has been taken, so a proxy that is never called opens no spare connections. Eager filling would be wrong for a client on a metered link.
 
 Still open from spec §8: `Proxy.state` as an `AsyncStream`, and per-platform pool water marks (the Python 4/12 defaults are likely wrong for iOS on cellular, and `Config` already makes them configurable).
 

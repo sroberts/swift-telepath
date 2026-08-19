@@ -130,6 +130,13 @@ public struct NodeStream: AsyncSequence, Sendable {
 
     let base: StormStream
 
+    /// Collects every node. Bounded queries only — prefer iterating a large one.
+    public func collect() async throws -> [Node] {
+        var nodes: [Node] = []
+        for try await node in self { nodes.append(node) }
+        return nodes
+    }
+
     public func makeAsyncIterator() -> Iterator {
         Iterator(base: base.makeAsyncIterator())
     }

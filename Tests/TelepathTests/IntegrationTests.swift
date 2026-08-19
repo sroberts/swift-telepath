@@ -150,25 +150,38 @@ struct IntegrationTests {
         }
     }
 
-    /// Axon.upload() returns a dynamically shared object. Shares are not implemented,
-    /// so the contract is a clear error rather than a hang or a misparse. Set
-    /// TELEPATH_AXON_URL to a running Axon to exercise it; this is also how
-    /// tools/capture.py records a real t2:share for the replay corpus.
+    /// Axon.upload() returns a dynamically shared object, which is the only live
+    /// source of a real t2:share. Set TELEPATH_AXON_URL to a running Axon.
     @Test(.enabled(if: ProcessInfo.processInfo.environment["TELEPATH_AXON_URL"] != nil))
-    func dynamicShareUnsupported() async throws {
+    func dynamicShareRoundTrips() async throws {
         let url = ProcessInfo.processInfo.environment["TELEPATH_AXON_URL"]!
         let proxy = try await Proxy.open(url)
         defer { Task { await proxy.close() } }
-        do {
-            _ = try await proxy.call("upload")
-            Issue.record("expected a dynamic share to be rejected")
-        } catch let error as TelepathError {
-            guard case .protocolViolation(let text) = error else {
-                Issue.record("unexpected error \(error)")
-                return
-            }
-            #expect(text.contains("share"))
-        }
+
+        let share = try await proxy.callForShare("upload")
+        #expect(share.iden.count == 32, "a share iden is a 32-char hex guid")
+        #expect(share.methods["write"] != nil)
+        #expect(share.methods["save"] != nil)
+
+        // The link that carried the reply is free immediately; a share is addressed
+        // by iden, not by holding a connection.
+        #expect(await proxy.idleLinkCount >= 1)
+
+        // Drive the share for real: write bytes, then commit them.
+        let payload: [UInt8] = Array("swift-telepath share round trip".utf8)
+        _ = try await share.call("write", [.binary(payload)])
+        let saved = try await share.call("save")
+
+        // Axon.save() reports the stored size, which must match what we wrote.
+        let size = saved[0]?.intValue ?? saved["size"]?.intValue
+        #expect(size == Int64(payload.count), "the Axon should report the bytes it stored")
+
+        await share.close()
+        #expect(share.isClosed)
+
+        // The session survives share teardown.
+        let info = try await proxy.call("getCellInfo")
+        #expect(info["cell"] != nil)
     }
 
     @Test("a bad password is reported as AuthDeny during the handshake")

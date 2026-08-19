@@ -31,6 +31,11 @@ for try await node in cortex.nodes("inet:ipv4=8.8.8.8 -> inet:dns:a") {
     print(node.form, node.value, node.tags.keys)
 }
 
+// User administration
+let me = try await cortex.getCellUser()
+let user = try await cortex.addUser("analyst", password: "hunter2")
+try await cortex.setUserAdmin(iden: user.iden, false)
+
 // The full message stream when prints, warnings and progress matter
 for try await message in cortex.storm("[ inet:fqdn=example.com ]") {
     switch message {
@@ -48,7 +53,15 @@ Below the facade, `Proxy` exposes the protocol directly:
 ```swift
 let proxy = try await Proxy.open("cell:///srv/cortex00")
 let value = try await proxy.call("getCellInfo")
+let typed = try await proxy.call("getCellInfo", returning: CellInfo.self)
+
 for try await item in proxy.stream("storm", [.string("inet:ipv4")], kwargs: ["opts": .map([:])]) { ... }
+
+// A method returning a dynamically shared object
+let upload = try await proxy.callForShare("upload")
+_ = try await upload.call("write", [.binary(bytes)])
+_ = try await upload.call("save")
+await upload.close()          // share:fini travels on the main link
 ```
 
 ## Building and testing
@@ -81,6 +94,26 @@ export TELEPATH_CERT_HASH="$(cat .testcerts/certhash)"
 export TELEPATH_TLS_CLIENTCERT_PORT=27501
 swift test --filter TLSIntegrationTests
 ```
+
+## Documentation
+
+```sh
+swift package generate-documentation --target Telepath   # build
+swift package --disable-sandbox preview-documentation --target Telepath
+```
+
+CI builds DocC for every public target and fails on warnings, since a broken
+symbol link reads as documented until someone follows it. To publish static HTML:
+
+```sh
+swift package --allow-writing-to-directory ./docs \
+    generate-documentation --target Telepath --disable-indexing \
+    --transform-for-static-hosting --hosting-base-path swift-telepath \
+    --output-path ./docs
+```
+
+Hosting it on GitHub Pages needs the repository to be public, or a plan that
+allows Pages on private repositories.
 
 ## Conformance
 
@@ -272,12 +305,8 @@ server instead of filling a userspace buffer.
 
 ## Not yet implemented
 
-- **Dynamic shares** (`t2:share`). Detected and reported, not supported.
 - **`aha://` resolution**, mirror pools, `dynmirror`.
 - **Reconnect.** A dropped main link surfaces as an error rather than
   re-handshaking. Deliberate: silently re-handshaking loses server-side share
   state and would loop after a credential rotation.
-- **Pool low-water prefill.** `Config.poolLowWater` is inert: links are opened on
-  demand and culled above the high water mark, but Synapse's background refill to
-  four idle links is not replicated.
 - **Server side.** Out of scope.
