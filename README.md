@@ -249,6 +249,11 @@ leave it nil and cancel the task instead — **task cancellation is honoured**, 
 `withThrowingTaskGroup`, a parent task's cancellation, or a test's time limit all
 unblock a call waiting on a server.
 
+`Config.connectTimeout` covers establishing the TCP connection only, and
+`Config.handshakeTimeout` (nil by default, like Synapse) covers the `tele:syn`
+exchange. They are separate because a cold cell can take far longer to
+authenticate and assemble its `sharinfo` than to accept a socket.
+
 Writes are bounded by the same deadline, since a peer that accepts the connection
 and stops reading fills the TCP window and would otherwise stall a call before it
 ever waited for a reply.

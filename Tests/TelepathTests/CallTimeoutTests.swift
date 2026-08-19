@@ -197,10 +197,12 @@ struct CallTimeoutTests {
         }
     }
 
-    /// The handshake is bounded by connectTimeout, not callTimeout, so a short call
-    /// deadline does not make connecting fragile.
+    /// The handshake has its own budget, so a short call deadline does not make
+    /// connecting fragile. Regression: binding it to connectTimeout instead made
+    /// connecting to a cold Cortex fail, because accepting a socket and
+    /// authenticating a session are not the same order of work.
     @Test("the handshake is not governed by the call deadline")
-    func handshakeUsesConnectTimeout() async throws {
+    func handshakeUsesOwnBudget() async throws {
         try await withDaemon { message, connection in
             if message.name == "tele:syn" {
                 // Longer than callTimeout, well inside connectTimeout.
@@ -210,9 +212,31 @@ struct CallTimeoutTests {
         } _: { url in
             var configuration = config(timeout: .milliseconds(100))
             configuration.connectTimeout = .seconds(5)
+            #expect(configuration.handshakeTimeout == nil, "unbounded by default")
             let proxy = try await Proxy.open(url, config: configuration)
             #expect(await proxy.sessionIden == Self.session)
             await proxy.close()
+        }
+    }
+
+    /// It is still available when a caller wants one.
+    @Test("an explicit handshake deadline is enforced")
+    func handshakeDeadlineWhenSet() async throws {
+        try await withDaemon { message, _ in
+            _ = message   // tele:syn is never answered
+        } _: { url in
+            var configuration = Config()
+            configuration.handshakeTimeout = .milliseconds(200)
+            do {
+                let proxy = try await Proxy.open(url, config: configuration)
+                await proxy.close()
+                Issue.record("expected the handshake to time out")
+            } catch let error as TelepathError {
+                guard case .timedOut = error else {
+                    Issue.record("unexpected error \(error)")
+                    return
+                }
+            }
         }
     }
 }

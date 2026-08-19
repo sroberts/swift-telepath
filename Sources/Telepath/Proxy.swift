@@ -6,7 +6,19 @@ import NIOPosix
 import TelepathTLS
 
 public struct Config: Sendable {
+    /// Deadline for establishing the TCP connection. It does **not** cover the
+    /// Telepath handshake, which is server-side work of a different order.
     public var connectTimeout: Duration = .seconds(10)
+
+    /// Deadline for the `tele:syn` exchange. Nil, the default, means wait
+    /// indefinitely, matching Synapse, which sets no handshake deadline.
+    ///
+    /// Kept separate from ``connectTimeout`` deliberately: a cold cell can take
+    /// far longer to authenticate and assemble its `sharinfo` than to accept a
+    /// socket, and reusing the connect budget here made connecting to a
+    /// just-started Cortex fail. Cancelling the task also unblocks a stalled
+    /// connect, so an unbounded default is not a hang with no way out.
+    public var handshakeTimeout: Duration?
     /// Client-side deadline for a single wait on a server message. Nil means wait
     /// indefinitely, matching Synapse, and is the default.
     ///
@@ -110,7 +122,7 @@ public actor Proxy {
                 certificateDirectory: config.certificateDirectory.map { CertificateDirectory(root: $0) })
             connected = link
             let result = try await Self.handshake(
-                on: link, url: url, timeout: TimeAmount(config.connectTimeout))
+                on: link, url: url, timeout: config.handshakeTimeout.map(TimeAmount.init))
             let proxy = Proxy(url: url, config: config, group: eventLoopGroup, ownsGroup: ownsGroup,
                               mainLink: link, sessionIden: result.session, shareInfo: result.shareInfo,
                               features: result.features, protocolVersion: result.version)
@@ -133,7 +145,7 @@ public actor Proxy {
     private static func handshake(
         on link: Link,
         url: TelepathURL,
-        timeout: TimeAmount
+        timeout: TimeAmount?
     ) async throws -> HandshakeResult {
         // When a user is supplied without a password, Synapse authenticates from a
         // TLS client certificate and 'auth' stays None.
@@ -151,7 +163,8 @@ public actor Proxy {
             ]),
         ]), timeout: timeout)
 
-        // The handshake is bounded by the connect timeout, not the call timeout.
+        // Bounded by handshakeTimeout, which is nil by default: neither the connect
+        // budget nor the call deadline governs this exchange.
         let message = try Message(try await link.receiveRequired(timeout: timeout))
         guard message.name == "tele:syn" else {
             throw TelepathError.handshakeFailed("expected tele:syn, got \(message.name)")
