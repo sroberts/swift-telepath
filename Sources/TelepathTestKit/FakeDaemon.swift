@@ -1,4 +1,5 @@
 import Msgpack
+import NIOConcurrencyHelpers
 import NIOCore
 import NIOPosix
 
@@ -57,6 +58,7 @@ public actor FakeDaemon {
 
     private let group: any EventLoopGroup
     private var channel: Channel?
+    private nonisolated let handlerTasks = HandlerTasks()
     public let socketPath: String
 
     /// A `unix://` URL addressing this daemon.
@@ -80,7 +82,8 @@ public actor FakeDaemon {
         let bootstrap = ServerBootstrap(group: group)
             .serverChannelOption(.backlog, value: 16)
             .childChannelInitializer { channel in
-                channel.pipeline.addHandler(ConnectionHandler(handler: handler))
+                channel.pipeline.addHandler(
+                    ConnectionHandler(handler: handler, tasks: self.handlerTasks))
             }
         channel = try await bootstrap.bind(unixDomainSocketPath: socketPath).get()
     }
@@ -88,8 +91,37 @@ public actor FakeDaemon {
     public func stop() async {
         try? await channel?.close().get()
         channel = nil
+        // Handler chains outlive the messages that started them — a script that
+        // sleeps before replying is the whole point of several tests. Shutting the
+        // group down underneath one leaves it writing to a dead event loop, which
+        // SwiftNIO reports as an error today and has said it will turn into a
+        // forced crash. Cancel and await them first so teardown is ordered.
+        await handlerTasks.drain()
         try? await group.shutdownGracefully()
         try? FileManager.default.removeItem(atPath: socketPath)
+    }
+}
+
+/// The live per-connection handler chains, so `FakeDaemon.stop()` can wait for
+/// them instead of pulling the event loop group out from under them.
+private final class HandlerTasks: @unchecked Sendable {
+    private let lock = NIOLock()
+    private var tasks: [Task<Void, Never>] = []
+
+    func track(_ task: Task<Void, Never>) {
+        lock.withLock { tasks.append(task) }
+    }
+
+    func drain() async {
+        let pending = lock.withLock {
+            let snapshot = tasks
+            tasks = []
+            return snapshot
+        }
+        for task in pending {
+            task.cancel()
+            await task.value
+        }
     }
 }
 
@@ -101,12 +133,14 @@ private final class ConnectionHandler: ChannelInboundHandler, @unchecked Sendabl
     typealias InboundIn = ByteBuffer
 
     private let handler: FakeDaemon.Handler
+    private let tasks: HandlerTasks
     private var unpacker = MsgpackStreamUnpacker()
     private var connection: FakeDaemon.Connection?
     private var queue: Task<Void, Never>?
 
-    init(handler: @escaping FakeDaemon.Handler) {
+    init(handler: @escaping FakeDaemon.Handler, tasks: HandlerTasks) {
         self.handler = handler
+        self.tasks = tasks
     }
 
     func channelActive(context: ChannelHandlerContext) {
@@ -135,12 +169,14 @@ private final class ConnectionHandler: ChannelInboundHandler, @unchecked Sendabl
         // Chain onto the previous task so handlers run in message order.
         let previous = queue
         let handler = self.handler
-        queue = Task {
+        let chain = Task {
             await previous?.value
             for message in messages {
                 try? await handler(message, connection)
             }
         }
+        queue = chain
+        tasks.track(chain)
     }
 
     func errorCaught(context: ChannelHandlerContext, error: any Error) {

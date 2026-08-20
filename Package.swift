@@ -1,4 +1,4 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.2
 import PackageDescription
 
 // Protocol conformance is pinned to this Synapse release. Bump here, regenerate
@@ -55,6 +55,7 @@ let package = Package(
             dependencies: [
                 "Msgpack",
                 "Telepath",
+                .product(name: "NIOConcurrencyHelpers", package: "swift-nio"),
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
             ]

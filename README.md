@@ -5,8 +5,9 @@ Synapse service (Cortex, Axon, AHA, JsonStor).
 
 Protocol version `(3, 0)`, task v2. Conformance is pinned to Synapse **2.249.0**.
 Swift 6 strict concurrency, macOS 14+ / iOS 17+. Requires a **Swift 6.2+
-toolchain**: swift-nio, swift-log and swift-certificates now declare tools
-versions 6.1 and 6.2, so an older toolchain cannot resolve the package.
+toolchain**, declared by the manifest's tools version: swift-nio, swift-log and
+swift-certificates themselves declare 6.1 and 6.2, so an older toolchain cannot
+resolve the package.
 
 > **Status: MVP.** Connect, call, and stream against a real Cortex over `tcp://`,
 > `ssl://`, `unix://`, and `cell://`, including certificate pinning and TLS client

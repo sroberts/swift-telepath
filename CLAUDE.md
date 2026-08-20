@@ -8,7 +8,8 @@ MVP built: codec, transport, handshake, unary calls, generators, connection pool
 
 ## What this is
 
-A SwiftNIO client for **Telepath**, the msgpack RPC protocol fronting Synapse services (Cortex, Axon, AHA, JsonStor). Protocol target `(3, 0)`, pinned to Synapse **2.249.0**. Swift 6 strict concurrency, macOS 14+ / iOS 17+ / Linux.
+A SwiftNIO client for **Telepath**, the msgpack RPC protocol fronting Synapse services (Cortex, Axon, AHA, JsonStor). Protocol target `(3, 0)`, pinned to Synapse **2.249.0**. Swift 6 strict concurrency, macOS 14+ / iOS 17+ / Linux, Swift 6.2+ toolchain
+(declared by the manifest's tools version, because dependencies require it).
 
 Telepath has **no published specification** — it is defined by its Python implementation. Any protocol question is answered by reading upstream Synapse source (file references are listed in `spec.md` §9), never by inference. Conformance vectors generated from Python are the de facto spec.
 
@@ -17,6 +18,7 @@ Telepath has **no published specification** — it is defined by its Python impl
 ```bash
 swift build
 swift test                                   # unit tests; integration suites skip themselves
+SWIFTNIO_STRICT=1 swift test                 # what CI runs: event-loop-after-shutdown crashes
 swift package generate-documentation --target Telepath   # DocC; CI fails on warnings
 swift test --filter VectorTests              # one suite
 swift test --filter DecoderTests.overflow    # one test
@@ -120,6 +122,7 @@ Integration suites skip when no server is configured. **CI must set `TELEPATH_RE
 - **Abandoned generators close their link** rather than draining.
 - **Cancellation must be honoured on every await that waits on the network.** `Link.receive` wraps its continuation in `withTaskCancellationHandler`; a bare `withCheckedThrowingContinuation` ignores cancellation and leaves the call suspended until the server replies. That also breaks everything built on cancellation, including swift-testing's `.timeLimit` — the regression test for it hung past its own limit. A cancelled call closes its link for the same reason a timed-out one does.
 - **`callTimeout` bounds one wait, not one call.** Nil by default. For a generator that means the gap between yields, not total duration — a Storm query may legitimately run for hours. A timed-out link is **closed, never pooled**: the late reply would otherwise be delivered to the next call on that link. `CallTimeoutTests.lateReplyDoesNotDesync` covers exactly that, and fails if the link is released instead of closed.
+- **Nothing may touch an event loop group after it is shut down.** `Proxy.close()` cancels *and awaits* the cull loop, the main-link reader, and every in-flight pool top-up before `shutdownGracefully`; `FakeDaemon.stop()` drains its per-connection handler chains the same way. A background top-up sitting inside `Link.connect`, or a scripted reply sleeping before it writes, is holding the group — cancelling alone does not get it off. SwiftNIO logs this to stderr and passes the test; `SWIFTNIO_STRICT=1` turns it into a crash, which is why CI sets it. Await from inside the actor is safe: the actor is released at every suspension.
 - **Integers compare numerically across cases.** msgpack draws no wire distinction between signed and unsigned, so `.int(0)` decodes as `.uint(0)`; `MsgpackValue`'s `Equatable`/`Hashable` are hand-written so equal numbers compare and hash equally, `.bigInt` included. Found by fuzzing. Do not revert to a derived conformance.
 
 Pool prefill is deliberately **reactive**: links top up toward `poolLowWater` only after one has been taken, so a proxy that is never called opens no spare connections. Eager filling would be wrong for a client on a metered link.

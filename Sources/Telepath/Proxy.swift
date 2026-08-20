@@ -63,6 +63,10 @@ public actor Proxy {
     /// Links being opened in the background, counted so a burst of calls cannot
     /// stack up an unbounded number of connection attempts.
     private var pendingFills = 0
+    /// The in-flight background top-ups, held so `close()` can wait for them.
+    /// Keyed so each removes only itself when it finishes.
+    private var fillTasks: [Int: Task<Void, Never>] = [:]
+    private var nextFillID = 0
 
     /// The session iden from the handshake. Pool links skip the handshake entirely,
     /// so this value is the only thing binding them to an authenticated session.
@@ -471,17 +475,22 @@ public actor Proxy {
 
         pendingFills += wanted
         for _ in 0..<wanted {
-            Task { [weak self] in
+            let id = nextFillID
+            nextFillID += 1
+            fillTasks[id] = Task { [weak self] in
                 guard let self else { return }
-                await self.fillOneLink()
+                await self.fillOneLink(id: id)
             }
         }
     }
 
     /// Opens one spare link. Failures are swallowed: a background top-up must not
     /// surface an error to a caller who never asked for this connection.
-    private func fillOneLink() async {
-        defer { pendingFills -= 1 }
+    private func fillOneLink(id: Int) async {
+        defer {
+            pendingFills -= 1
+            fillTasks[id] = nil
+        }
         guard !closed else { return }
         guard let link = try? await Link.connect(
             to: url,
@@ -563,8 +572,28 @@ public actor Proxy {
     public func close() async {
         guard !closed else { return }
         closed = true
-        cullTask?.cancel()
-        mainLinkTask?.cancel()
+
+        // Every background task must finish before the event loop group goes away.
+        // Cancelling is not enough: a top-up already inside `Link.connect`, or a
+        // cull already inside `Link.close`, is holding the group, and shutting it
+        // down underneath one means bootstrapping or closing on a dead event loop.
+        // SwiftNIO reports that as an error today and has said it will become a
+        // forced crash. Awaiting is safe because the actor is released at each
+        // suspension, so the tasks can still make progress.
+        let culler = cullTask
+        let reader = mainLinkTask
+        cullTask = nil
+        mainLinkTask = nil
+        let fills = Array(fillTasks.values)
+        fillTasks.removeAll()
+
+        culler?.cancel()
+        reader?.cancel()
+        for task in fills { task.cancel() }
+        await culler?.value
+        await reader?.value
+        for task in fills { await task.value }
+
         for link in idleLinks { await link.close() }
         idleLinks.removeAll()
         await mainLink.close()

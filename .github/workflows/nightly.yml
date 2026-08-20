@@ -5,6 +5,10 @@ on:
     - cron: "0 6 * * *"
   workflow_dispatch:
 
+env:
+  # See ci.yml: an event loop scheduled on after shutdown should crash, not log.
+  SWIFTNIO_STRICT: "1"
+
 jobs:
   fuzz:
     name: Fuzz (one hour)
@@ -12,6 +16,18 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+
+      # Dependencies declare tools versions 6.1 and 6.2, and this package now
+      # declares 6.2, so an older toolchain cannot resolve it. The macOS image
+      # default Xcode is not a pin: GitHub can roll it back, which would
+      # resurrect exactly the resolution failure this pin exists to prevent.
+      - name: Pin the macOS toolchain
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Record the toolchain in the log
+        run: swift --version
 
       # spec.md M0 exit criteria: the fuzz target runs an hour clean. Seeds are
       # varied per shard so successive nights explore different inputs; any failure
