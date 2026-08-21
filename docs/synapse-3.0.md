@@ -67,7 +67,7 @@ Second, `features` is typed `[String: Int]`, and 3.0's only feature value is the
 **string** `'1.0.0'`. It currently decodes to `0`, so `hasFeature(_:minVersion:)`
 would reject a feature the server does advertise.
 
-### 3. Storm API arguments became keyword-only
+### 3. Storm API arguments became keyword-only — but not in our code
 
 | | 2.249.0 | 3.0.0 |
 |---|---|---|
@@ -75,10 +75,12 @@ would reject a feature the server does advertise.
 | `CoreApi.callStorm` | `(self, text, opts=None)` | `(self, text, *, opts=None)` |
 | `CoreApi.count` | `(self, text, opts=None)` | `(self, text, *, opts=None)` |
 
-The facade passes `opts` positionally, so 3.0 answers `TypeError: CoreApi.storm()
-takes 2 positional arguments but 3 were given`. Passing it as a keyword works
-against **both** versions, so this one is a strict improvement rather than a
-fork.
+`Sources/Synapse/Cortex.swift` already passes `opts` as a keyword, so the facade
+is unaffected. The `TypeError: CoreApi.storm() takes 2 positional arguments but 3
+were given` failures come from the Telepath-level integration tests, which call
+the raw Synapse API positionally (`IntegrationTests.swift:69` and friends). Those
+tests are pinned to the 2.x model in other ways too — `inet:ipv4` no longer
+exists — so there is nothing to fix here until the 3.0 decision is made.
 
 ### 4. `repr` moved inside `node:opts`
 
@@ -118,15 +120,16 @@ queries written against the 2.x model, not client defects.
 - A 3.0 cell logs `NotReady: No aha servers registered to lookup jsonstor` at
   boot and starts anyway. Nested cells appear to expect AHA in 3.0.
 
+## Status
+
+Findings 1 and 2 are **fixed** (`41607f9`): both version shapes parse, string-valued
+features score by major version, and `capture.py` records the version correctly.
+Verified against both live servers — 2.249.0 still passes 152/152, and 3.0.0 now
+reports `serverVersion == [3, 0, 0]` and decodes `getCellInfo`.
+
 ## Recommendation
 
-Do not chase 3.0 before tagging 1.0. Findings 1 and 2 are the only ones inside
-`Sources/Telepath`, they are small, and both are version-representation
-robustness rather than protocol change — worth fixing now precisely because they
-are cheap and because `serverVersion` returning `nil` is a silent wrong answer.
-Finding 3 is a one-line change that improves 2.x too.
-
-Findings 4 through 6 are a facade and data-model project, not a protocol one.
+Do not chase the rest before tagging 1.0. Findings 4 through 6 are a facade and data-model project, not a protocol one.
 They need a decision this spike cannot make: whether `Sources/Synapse` supports
 both model generations behind one API, or whether the package pins a Synapse
 major and 3.0 gets its own release track. That decision belongs in `spec.md`
