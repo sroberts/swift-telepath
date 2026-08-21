@@ -314,10 +314,8 @@ server instead of filling a userspace buffer.
   [docs/synapse-3.0.md](docs/synapse-3.0.md).
 - **`aha://` resolution** and **AHA mirror pools**. Specified in
   [spec.md](spec.md) §3.9 and scheduled as M7 and M8; not built yet.
-- **`Proxy.state`.** A dropped main link surfaces as an error and the proxy never
-  re-handshakes — deliberate, because a silent re-handshake loses server-side
-  share state and would loop on `AuthDeny` after a credential rotation. The
-  missing half is telling the caller it happened: `Proxy.state` as an
-  `AsyncStream` is specified in [spec.md](spec.md) §8 and scheduled as M6, so a
-  caller can reconnect on its own terms by opening a new `Proxy`.
+- **Automatic reconnect**, deliberately. A dropped main link surfaces as an error
+  and the proxy never re-handshakes: a silent re-handshake loses server-side share
+  state and would loop on `AuthDeny` after a credential rotation. Observe
+  `Proxy.state` and open a new `Proxy` if that is the policy you want.
 - **Server side.** Out of scope.

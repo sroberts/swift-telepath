@@ -62,17 +62,38 @@ public actor FakeDaemon {
     public let socketPath: String
 
     /// A `unix://` URL addressing this daemon.
-    public var url: String { "unix://\(socketPath)" }
+    ///
+    /// Nonisolated because it derives only from `socketPath`, which is a `let`:
+    /// making callers await an address that cannot change is friction with no
+    /// safety behind it.
+    public nonisolated var url: String { "unix://\(socketPath)" }
 
     public init() {
-        self.group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         let unique = "\(ProcessInfo.processInfo.processIdentifier)-\(UInt32.random(in: 0..<UInt32.max))"
         // Unix socket paths are length-limited; /tmp keeps it short.
-        self.socketPath = "/tmp/telepath-fake-\(unique).sock"
+        self.init(socketPath: "/tmp/telepath-fake-\(unique).sock")
+    }
+
+    /// A daemon on a caller-chosen socket path.
+    ///
+    /// Exists so a test can restart a server at the address a client already knows,
+    /// which is the only way to exercise reconnect honestly: a fresh address would
+    /// prove the client can dial somewhere new, not that it recovers from a server
+    /// coming back.
+    public init(socketPath: String) {
+        self.group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+        self.socketPath = socketPath
     }
 
     public static func start(handler: @escaping Handler) async throws -> FakeDaemon {
         let daemon = FakeDaemon()
+        try await daemon.listen(handler: handler)
+        return daemon
+    }
+
+    public static func start(socketPath: String,
+                             handler: @escaping Handler) async throws -> FakeDaemon {
+        let daemon = FakeDaemon(socketPath: socketPath)
         try await daemon.listen(handler: handler)
         return daemon
     }

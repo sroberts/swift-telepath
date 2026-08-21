@@ -58,6 +58,9 @@ public actor Proxy {
     private let mainLink: Link
     private var idleLinks: [Link] = []
     private var closed = false
+    /// Session liveness, fanned out through ``state``. Held here so the proxy owns
+    /// it; deliberately never the other way round.
+    private nonisolated let stateBroadcaster = ProxyStateBroadcaster()
     private var cullTask: Task<Void, Never>?
     private var mainLinkTask: Task<Void, Never>?
     /// Links being opened in the background, counted so a burst of calls cannot
@@ -83,6 +86,26 @@ public actor Proxy {
     /// The per-message deadline, in NIO's units. Nil means wait indefinitely.
     var callTimeoutAmount: TimeAmount? { config.callTimeout.map(TimeAmount.init) }
     public var serverVersion: [Int]? { shareInfo.synapseVersion }
+
+    /// Session liveness, as it changes.
+    ///
+    /// Yields ``State/connected`` immediately, then ``State/disconnected(_:)`` once
+    /// the main link drops, then finishes. Finishes without a `disconnected` when
+    /// the proxy is closed, since closing is not a failure. Each call returns an
+    /// independent stream; an observer arriving after the session ended is told at
+    /// once rather than waiting for an event that cannot come.
+    ///
+    /// The proxy does **not** re-handshake, by decision rather than omission: a
+    /// silent re-handshake loses server-side share state the caller still holds
+    /// references to, and loops on `AuthDeny` after a credential rotation. This is
+    /// the signal that lets a caller reconnect on its own terms, which means
+    /// opening a new `Proxy` — the only construction that honestly rebuilds the
+    /// session, the pool, and the caller's shares together.
+    ///
+    /// Holding the stream does not keep the proxy alive, and neither does never
+    /// draining it. A slow observer sees only the latest state; it cannot stall the
+    /// proxy or grow a buffer behind it.
+    public nonisolated var state: AsyncStream<State> { stateBroadcaster.makeStream() }
 
     private static let protocolVersionOurs = [3, 0]
 
@@ -548,11 +571,20 @@ public actor Proxy {
             do {
                 value = try await mainLink.receive()
             } catch {
-                // The main link died; the session is gone with it.
+                // The main link died; the session is gone with it. Cancellation is
+                // close() doing its job, not a disconnect, and close() finishes the
+                // stream itself.
                 config.logger.debug("main link closed: \(error)")
+                if !closed { stateBroadcaster.disconnected(error) }
                 return
             }
-            guard let value else { return }   // clean end of stream
+            // A clean end of stream is still the end of the session: the server hung
+            // up. It reads as orderly, so it is easy to mistake for nothing having
+            // happened, which is exactly why it has to be reported.
+            guard let value else {
+                if !closed { stateBroadcaster.disconnected(TelepathError.connectionClosed) }
+                return
+            }
 
             guard let message = try? Message(value) else {
                 config.logger.warning("unparseable message on the main link")
@@ -617,6 +649,7 @@ public actor Proxy {
         idleLinks.removeAll()
         await mainLink.close()
         if ownsGroup { try? await group.shutdownGracefully() }
+        stateBroadcaster.finish()
     }
 }
 
