@@ -18,6 +18,10 @@ env:
   # stderr nobody reads into a crash. That ordering bug is invisible otherwise —
   # the tests still pass — and SwiftNIO has said it will become a crash anyway.
   SWIFTNIO_STRICT: "1"
+  # Distinguishes cache entries: the container jobs and the runner-installed
+  # toolchain lay .build out at different absolute paths, and a restore across
+  # the two produces a build that cannot be linked.
+  SWIFT_CACHE_TAG: swift-6.2-noble
 
 jobs:
   unit:
@@ -51,6 +55,21 @@ jobs:
       - name: Record the toolchain in the log
         run: swift --version
 
+      # SwiftPM compiles every dependency from source, which is the bulk of each
+      # Linux job. The key deliberately covers only Package.resolved and the
+      # toolchain, never our own sources: dependencies stay compiled across
+      # commits while anything in Sources/ or Tests/ is always rebuilt. The
+      # Documentation job is left uncached on purpose -- it is the warning gate,
+      # and an incremental build does not re-emit warnings for files it did not
+      # recompile.
+      - name: Cache compiled dependencies
+        if: runner.os == 'Linux'
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: swiftpm-runner-${{ env.SWIFT_CACHE_TAG }}-${{ hashFiles('Package.resolved') }}
+          restore-keys: swiftpm-runner-${{ env.SWIFT_CACHE_TAG }}-
+
       - name: Build
         run: swift build --build-tests
 
@@ -74,17 +93,32 @@ jobs:
           fi
 
   integration:
-    name: Integration (${{ matrix.transport }})
+    name: Integration (tcp + cell)
     runs-on: ubuntu-latest
     container: swift:6.2-noble
-    strategy:
-      fail-fast: false
-      matrix:
-        # ssl:// lives in the integration-tls job, which needs a certificate
-        # authority and two listeners to cover pinning and client certificates.
-        transport: [tcp, cell]
+    # One job rather than a transport matrix. Both transports talk to the same
+    # Cortex and run the same suite, so a matrix bought nothing but a second
+    # container to provision and a second full build of the package. Both still
+    # run unconditionally, and both still report -- see the loop below.
+    #
+    # ssl:// lives in the integration-tls job, which needs a certificate
+    # authority and two listeners to cover pinning and client certificates.
     steps:
       - uses: actions/checkout@v4
+
+      # SwiftPM compiles every dependency from source, which is the bulk of each
+      # Linux job. The key deliberately covers only Package.resolved and the
+      # toolchain, never our own sources: dependencies stay compiled across
+      # commits while anything in Sources/ or Tests/ is always rebuilt. The
+      # Documentation job is left uncached on purpose -- it is the warning gate,
+      # and an incremental build does not re-emit warnings for files it did not
+      # recompile.
+      - name: Cache compiled dependencies
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: swiftpm-${{ env.SWIFT_CACHE_TAG }}-${{ hashFiles('Package.resolved') }}
+          restore-keys: swiftpm-${{ env.SWIFT_CACHE_TAG }}-
 
       # Synapse requires Python >= 3.11, so this image must be noble (3.12), not
       # jammy (3.10).
@@ -111,21 +145,40 @@ jobs:
           /opt/synvenv/bin/python -m synapse.tools.service.moduser \
             --svcurl "cell://$PWD/.testcortex/cortex00" --passwd s3cret root
 
-      - name: Select transport URL
-        run: |
-          case "${{ matrix.transport }}" in
-            tcp)  echo "TELEPATH_TEST_URL=tcp://root:s3cret@127.0.0.1:27492/" >> $GITHUB_ENV ;;
-            cell) echo "TELEPATH_TEST_URL=cell://$PWD/.testcortex/cortex00" >> $GITHUB_ENV ;;
-          esac
-          # The Cortex embeds an Axon, whose upload() returns a dynamic share. That
-          # is the only live source of a t2:share, so point the share test at it.
-          echo "TELEPATH_AXON_URL=cell://$PWD/.testcortex/cortex00/axon" >> $GITHUB_ENV
-
-      - name: Integration tests
+      - name: Integration tests over every transport
         # Missing server becomes a failure rather than a silent skip.
         env:
           TELEPATH_REQUIRE_INTEGRATION: "1"
-        run: swift test
+        # POSIX sh only -- this container job runs under `sh -e {0}`.
+        #
+        # A failing transport must not stop the other from running, or a tcp
+        # regression would hide whatever cell was about to report. Both run, both
+        # are reported, and the step fails if either did.
+        run: |
+          # The Cortex embeds an Axon, whose upload() returns a dynamic share.
+          # That is the only live source of a t2:share, so point the share test
+          # at it.
+          TELEPATH_AXON_URL="cell://$PWD/.testcortex/cortex00/axon"
+          export TELEPATH_AXON_URL
+
+          overall=0
+          for transport in tcp cell; do
+            case "$transport" in
+              tcp)  TELEPATH_TEST_URL="tcp://root:s3cret@127.0.0.1:27492/" ;;
+              cell) TELEPATH_TEST_URL="cell://$PWD/.testcortex/cortex00" ;;
+            esac
+            export TELEPATH_TEST_URL
+
+            echo "::group::$transport"
+            rc=0
+            swift test || rc=$?
+            echo "::endgroup::"
+            if [ "$rc" -ne 0 ]; then
+              echo "::error::integration tests failed over $transport"
+              overall=1
+            fi
+          done
+          exit "$overall"
 
       - name: Cortex log
         if: failure()
@@ -137,6 +190,20 @@ jobs:
     container: swift:6.2-noble
     steps:
       - uses: actions/checkout@v4
+
+      # SwiftPM compiles every dependency from source, which is the bulk of each
+      # Linux job. The key deliberately covers only Package.resolved and the
+      # toolchain, never our own sources: dependencies stay compiled across
+      # commits while anything in Sources/ or Tests/ is always rebuilt. The
+      # Documentation job is left uncached on purpose -- it is the warning gate,
+      # and an incremental build does not re-emit warnings for files it did not
+      # recompile.
+      - name: Cache compiled dependencies
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: swiftpm-${{ env.SWIFT_CACHE_TAG }}-${{ hashFiles('Package.resolved') }}
+          restore-keys: swiftpm-${{ env.SWIFT_CACHE_TAG }}-
 
       - name: Install Synapse ${{ env.SYNAPSE_VERSION }}
         run: |
@@ -220,6 +287,20 @@ jobs:
           --health-start-period 90s
     steps:
       - uses: actions/checkout@v4
+
+      # SwiftPM compiles every dependency from source, which is the bulk of each
+      # Linux job. The key deliberately covers only Package.resolved and the
+      # toolchain, never our own sources: dependencies stay compiled across
+      # commits while anything in Sources/ or Tests/ is always rebuilt. The
+      # Documentation job is left uncached on purpose -- it is the warning gate,
+      # and an incremental build does not re-emit warnings for files it did not
+      # recompile.
+      - name: Cache compiled dependencies
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: swiftpm-${{ env.SWIFT_CACHE_TAG }}-${{ hashFiles('Package.resolved') }}
+          restore-keys: swiftpm-${{ env.SWIFT_CACHE_TAG }}-
 
       - name: Wait for the Cortex to accept connections
         run: |
