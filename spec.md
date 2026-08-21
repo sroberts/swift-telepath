@@ -463,6 +463,8 @@ Phase 2 candidates in priority order: `aha://` resolution, Axon file upload and 
 
 **No protocol stability guarantee.** Vertex can change Telepath in any minor release. Mitigation is the weekly drift job plus the explicit version pin, not optimism.
 
+**Synapse 3.0 is released and the facade does not work against it.** The wire protocol does: a 3.0 Cortex handshakes, calls, and streams with no codec or transport change. What broke is `Sources/Synapse` — keyword-only Storm arguments, a restructured `node` payload, and a data model without `inet:ipv4` — plus two version-representation bugs in `Sources/Telepath`. Measured, not estimated: see [docs/synapse-3.0.md](docs/synapse-3.0.md). The open decision is whether one facade spans both model generations or whether 3.0 gets its own release track; that must be settled here before code moves.
+
 ---
 
 ## 9. References
