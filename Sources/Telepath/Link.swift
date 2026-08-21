@@ -53,6 +53,13 @@ final class Link: Sendable {
                 throw TelepathError.invalidURL("\(url)", reason: "missing socket path")
             }
             endpoint = .socket(path: path)
+        case .aha:
+            // Unreachable by design: `Proxy.open` resolves aha:// through the
+            // registry before anything opens a socket, because there is nothing to
+            // dial until it does. Explicit rather than a default, so adding a
+            // scheme keeps failing this switch at compile time.
+            throw TelepathError.invalidURL(
+                "\(url)", reason: "aha:// must be resolved before connecting")
         }
 
         // Fulfilled when the TLS handshake completes or fails, so the caller sees

@@ -38,6 +38,14 @@ public struct Config: Sendable {
     /// Where to find Synapse's certificate directory. A `certdir` in the URL wins
     /// over this; both fall back to Synapse's default location.
     public var certificateDirectory: URL?
+    /// Telepath URLs of the AHA registries an `aha://` URL resolves against, tried
+    /// in order (spec §3.9).
+    ///
+    /// Python keeps these in a process-wide global loaded from `telepath.yaml`. A
+    /// library cannot, so they are configuration. Empty is not a silent no-op:
+    /// opening an `aha://` URL with none configured fails with
+    /// ``TelepathError/ahaNoRegistries(service:)``.
+    public var ahaRegistries: [String] = []
     public var logger = Logger(label: "telepath")
 
     public init() {}
@@ -142,6 +150,24 @@ public actor Proxy {
         config: Config = Config(),
         group: (any EventLoopGroup)? = nil
     ) async throws -> Proxy {
+        // Resolution happens before anything opens a socket, because an aha:// URL
+        // names a service rather than an address. The resolved URL is an ordinary
+        // one, so a service that lives behind ssl:// gets §3.7's rules unchanged.
+        if url.scheme == .aha {
+            let resolved = try await AHAResolver.resolve(
+                url,
+                registries: config.ahaRegistries,
+                logger: config.logger,
+                open: { registry in
+                    // The registry connection must not itself try to resolve, or a
+                    // misconfigured registry list would recurse.
+                    var registryConfig = config
+                    registryConfig.ahaRegistries = []
+                    return try await Proxy.open(registry, config: registryConfig)
+                })
+            return try await open(resolved, config: config, group: group)
+        }
+
         let eventLoopGroup = group ?? MultiThreadedEventLoopGroup(numberOfThreads: 1)
         let ownsGroup = group == nil
         // Tracked so a handshake failure closes the socket. Shutting down the event

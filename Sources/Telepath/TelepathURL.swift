@@ -9,7 +9,7 @@ import Foundation
 /// shared object and passing the remainder to `getTeleApi` as a path.
 public struct TelepathURL: Sendable, Equatable {
     public enum Scheme: String, Sendable {
-        case tcp, ssl, unix, cell
+        case tcp, ssl, unix, cell, aha
     }
 
     /// Synapse's default Telepath port.
@@ -28,6 +28,9 @@ public struct TelepathURL: Sendable, Equatable {
     public var certHash: String?
     public var hostnameOverride: String?
     public var certDirectory: String?
+    /// `?mirror=true` on an `aha://` URL, asking the registry for a mirror rather
+    /// than the leader. Meaningless on every other scheme.
+    public var wantsMirror = false
     /// Query parameters that are not part of the known set. Surfaced rather than
     /// dropped so a typo in `certhash=` cannot silently disable pinning.
     public var unknownParameters: [String: String] = [:]
@@ -46,10 +49,6 @@ public struct TelepathURL: Sendable, Equatable {
         if rawScheme.contains("+consul") {
             throw TelepathError.invalidURL(string, reason: "consul resolution was removed upstream")
         }
-        if rawScheme == "aha" {
-            throw TelepathError.unsupportedScheme(rawScheme,
-                reason: "aha:// resolution requires an AHA client and is not implemented")
-        }
         guard let scheme = Scheme(rawValue: rawScheme) else {
             throw TelepathError.unsupportedScheme(rawScheme, reason: "unknown Telepath scheme")
         }
@@ -65,6 +64,14 @@ public struct TelepathURL: Sendable, Equatable {
         switch scheme {
         case .tcp, .ssl:
             try parseNetworkAuthority(remainder, original: string)
+        case .aha:
+            // The authority is a service name, not a host: there is nothing to
+            // connect to until the registry says where it lives. Credentials still
+            // parse, because a locally-specified user beats the one AHA suggests
+            // (§3.9). Port is meaningless here and stays at zero so a half-resolved
+            // URL cannot silently dial the default port.
+            try parseNetworkAuthority(remainder, original: string)
+            self.port = 0
         case .unix, .cell:
             // Path and share are colon-separated; the share is optional.
             let (rawPath, shareName) = Self.splitTrailingShare(remainder)
@@ -85,6 +92,18 @@ public struct TelepathURL: Sendable, Equatable {
         self.certDirectory = params.removeValue(forKey: "certdir")
         if let name = params.removeValue(forKey: "name") {
             self.share = name
+        }
+        // Synapse parses this with a YAML load, so "true" and "false" are the
+        // spellings that matter. Anything else is a typo worth reporting rather
+        // than quietly reading as false, since the difference decides whether a
+        // caller reaches a mirror or the leader.
+        if let raw = params.removeValue(forKey: "mirror") {
+            switch raw.lowercased() {
+            case "true", "yes", "on", "1": self.wantsMirror = true
+            case "false", "no", "off", "0": self.wantsMirror = false
+            default:
+                throw TelepathError.invalidURL(string, reason: "mirror= must be true or false, got '\(raw)'")
+            }
         }
         self.unknownParameters = params
     }
@@ -126,7 +145,8 @@ public struct TelepathURL: Sendable, Equatable {
         }
 
         guard let host = self.host, !host.isEmpty else {
-            throw TelepathError.invalidURL(original, reason: "missing host")
+            throw TelepathError.invalidURL(
+                original, reason: scheme == .aha ? "missing service name" : "missing host")
         }
         // An empty path means the default share, spelled '*' on the wire.
         self.share = pathPart.isEmpty ? Self.defaultShare : pathPart
