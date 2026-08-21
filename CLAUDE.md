@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-MVP built: codec, transport, handshake, unary calls, generators, connection pool, and a typed Cortex facade, all verified against a live Synapse 2.249.0 Cortex. `spec.md` remains the requirements source of truth — read it before implementing anything, and update it when a decision changes rather than letting code and spec diverge. README.md's "Not yet implemented" section is the current gap list (`aha://` and mirror pools, reconnect, server side).
+MVP built: codec, transport, handshake, unary calls, generators, connection pool, and a typed Cortex facade, all verified against a live Synapse 2.249.0 Cortex. `spec.md` remains the requirements source of truth — read it before implementing anything, and update it when a decision changes rather than letting code and spec diverge. README.md's "Not yet implemented" section is the current gap list (`aha://` and mirror pools, `Proxy.state`, Synapse 3.x, server side).
 
 ## What this is
 
@@ -100,7 +100,9 @@ Three NIOSSL traps, all found by testing rather than review: setting `certificat
 
 ## Explicit non-goals
 
-Do not implement these without the spec being changed first: server side / `Daemon`, task v1 (`task:init`/`task:fini` — detect and error), `aha://` resolution, `getPipeline`, mirror pools / `dynmirror` / spawned links / fd passing, Network.framework transport, and Python-parity dynamic member lookup (`@dynamicCallable` cannot express async throwing calls with keyword args).
+Do not implement these without the spec being changed first: server side / `Daemon`, task v1 (`task:init`/`task:fini` — detect and error), `getPipeline`, spawned links / fd passing, Network.framework transport, and Python-parity dynamic member lookup (`@dynamicCallable` cannot express async throwing calls with keyword args).
+
+`aha://` resolution and mirror pools left this list on 2026-08-21: they are specified in `spec.md` §3.9 and scheduled as M7 and M8. Still unimplemented — the spec is the target, not the state.
 
 ## Testing structure
 
@@ -131,7 +133,7 @@ Integration suites skip when no server is configured. **CI must set `TELEPATH_RE
 
 Pool prefill is deliberately **reactive**: links top up toward `poolLowWater` only after one has been taken, so a proxy that is never called opens no spare connections. Eager filling would be wrong for a client on a metered link.
 
-Still open from spec §8: `Proxy.state` as an `AsyncStream`, and per-platform pool water marks (the Python 4/12 defaults are likely wrong for iOS on cellular, and `Config` already makes them configurable).
+`Proxy.state` as an `AsyncStream` is settled in spec §8 and scheduled as M6 — decided, not built. Still genuinely open from §8: per-platform pool water marks (the Python 4/12 defaults are likely wrong for iOS on cellular, and `Config` already makes them configurable).
 
 ## Conventions
 

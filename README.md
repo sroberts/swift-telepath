@@ -312,8 +312,12 @@ server instead of filling a userspace buffer.
   other major rather than mis-decoding its nodes. The `Telepath` layer is version
   agnostic and is verified against 3.0.0, so `Proxy` works there today. See
   [docs/synapse-3.0.md](docs/synapse-3.0.md).
-- **`aha://` resolution**, mirror pools, `dynmirror`.
-- **Reconnect.** A dropped main link surfaces as an error rather than
-  re-handshaking. Deliberate: silently re-handshaking loses server-side share
-  state and would loop after a credential rotation.
+- **`aha://` resolution** and **AHA mirror pools**. Specified in
+  [spec.md](spec.md) §3.9 and scheduled as M7 and M8; not built yet.
+- **`Proxy.state`.** A dropped main link surfaces as an error and the proxy never
+  re-handshakes — deliberate, because a silent re-handshake loses server-side
+  share state and would loop on `AuthDeny` after a credential rotation. The
+  missing half is telling the caller it happened: `Proxy.state` as an
+  `AsyncStream` is specified in [spec.md](spec.md) §8 and scheduled as M6, so a
+  caller can reconnect on its own terms by opening a new `Proxy`.
 - **Server side.** Out of scope.
