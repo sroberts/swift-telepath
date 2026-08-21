@@ -308,6 +308,10 @@ server instead of filling a userspace buffer.
 
 ## Not yet implemented
 
+- **Synapse 3.x in the `Synapse` facade.** `Cortex` models 2.x and refuses any
+  other major rather than mis-decoding its nodes. The `Telepath` layer is version
+  agnostic and is verified against 3.0.0, so `Proxy` works there today. See
+  [docs/synapse-3.0.md](docs/synapse-3.0.md).
 - **`aha://` resolution**, mirror pools, `dynmirror`.
 - **Reconnect.** A dropped main link surfaces as an error rather than
   re-handshaking. Deliberate: silently re-handshaking loses server-side share

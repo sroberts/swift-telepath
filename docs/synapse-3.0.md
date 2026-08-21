@@ -127,10 +127,22 @@ features score by major version, and `capture.py` records the version correctly.
 Verified against both live servers — 2.249.0 still passes 152/152, and 3.0.0 now
 reports `serverVersion == [3, 0, 0]` and decodes `getCellInfo`.
 
-## Recommendation
+## Decision
 
-Do not chase the rest before tagging 1.0. Findings 4 through 6 are a facade and data-model project, not a protocol one.
-They need a decision this spike cannot make: whether `Sources/Synapse` supports
-both model generations behind one API, or whether the package pins a Synapse
-major and 3.0 gets its own release track. That decision belongs in `spec.md`
-before any code moves.
+Findings 4 through 6 are a facade and data-model project, not a protocol one, and
+they are **not** being chased before 1.0. `Sources/Synapse` models Synapse 2.x,
+and `Cortex` now refuses any other major outright.
+
+That refusal is the point rather than a side effect. Before it, a 3.x server did
+not fail — `Node.init` read a missing `iden` as nil and copied each
+`(value, metadata)` prop tuple through untouched, so every property came back
+wrong from a node that decoded cleanly. Silent wrong data is worse than no data,
+particularly for intelligence work.
+
+`Telepath` is unaffected and stays version agnostic; a caller who needs 3.x today
+uses `Proxy` directly, which this spike verified end to end against 3.0.0.
+
+When 3.x adoption justifies the work, the leading candidate is parallel `Synapse`
+and `Synapse3` modules over the shared core rather than a runtime-adaptive
+`Node`: `iden` and `nid` are different identifiers, not different spellings of
+one, and a type that hides that would compile, run, and be wrong.

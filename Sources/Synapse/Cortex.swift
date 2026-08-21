@@ -42,12 +42,42 @@ public struct StormOpts: Sendable {
 public struct Cortex: Sendable {
     public let proxy: Proxy
 
-    public init(_ proxy: Proxy) {
+    /// The Synapse generation this facade models.
+    ///
+    /// Synapse 3.0 restructured the node payload - `iden` became `nid`, and every
+    /// prop value became a `(value, metadata)` tuple - so ``Node`` decodes a 3.x
+    /// node without complaint and gets every property wrong. Silent wrong data is
+    /// worse than no data, so the connection is refused instead. `spec.md` section 8
+    /// records the decision and `docs/synapse-3.0.md` the measurements behind it.
+    ///
+    /// This is a limit of the facade, not of the protocol: Telepath is version
+    /// agnostic and was verified against 3.0.0, so a caller who needs 3.x today can
+    /// use `Proxy` directly.
+    public static let supportedSynapseMajor = 2
+
+    /// Wraps an open proxy, refusing a server this facade does not model.
+    ///
+    /// A server reporting no version at all is allowed through: absence is not
+    /// evidence of a version we reject, and a peer too old to report one has
+    /// already failed the handshake on its missing session iden.
+    public init(_ proxy: Proxy) async throws {
+        let version = await proxy.serverVersion
+        if let major = version?.first, major != Self.supportedSynapseMajor {
+            throw CortexError.unsupportedSynapseVersion(version ?? [])
+        }
         self.proxy = proxy
     }
 
     public static func open(_ url: String, config: Config = Config()) async throws -> Cortex {
-        Cortex(try await Proxy.open(url, config: config))
+        let proxy = try await Proxy.open(url, config: config)
+        do {
+            return try await Cortex(proxy)
+        } catch {
+            // The proxy owns an event loop group when it opened its own. Rejecting
+            // the server must not leak the connection that discovered the version.
+            await proxy.close()
+            throw error
+        }
     }
 
     public func close() async {
@@ -195,5 +225,27 @@ public struct CellInfo: Sendable, Decodable {
 
     public var versionString: String? {
         synapse?.version.map { $0.map(String.init).joined(separator: ".") }
+    }
+}
+
+/// Failures raised by the ``Cortex`` facade itself, as distinct from the remote
+/// errors Synapse reports over the wire.
+public enum CortexError: Error, Sendable, CustomStringConvertible {
+    /// The server runs a Synapse generation this facade does not model.
+    ///
+    /// Carries the version the server reported, empty when it reported none.
+    case unsupportedSynapseVersion([Int])
+
+    public var description: String {
+        switch self {
+        case .unsupportedSynapseVersion(let version):
+            let reported = version.isEmpty
+                ? "an unreported version"
+                : version.map(String.init).joined(separator: ".")
+            return "Cortex models Synapse \(Cortex.supportedSynapseMajor).x, and this server "
+                + "reports \(reported). Its node payload differs in ways that would decode "
+                + "without error and be wrong. The Telepath layer is version agnostic, so "
+                + "use Proxy directly against this server."
+        }
     }
 }
