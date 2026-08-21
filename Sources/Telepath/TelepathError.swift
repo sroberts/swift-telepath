@@ -130,4 +130,19 @@ public enum TelepathError: Error, Sendable, Equatable {
     case unexpectedExtType(Int8)
     /// A call was made on a share that has already been released.
     case shareClosed(String)
+
+    /// An `aha://` URL was opened with no registries configured. Python keeps
+    /// these in a module global loaded from `telepath.yaml`; a library cannot, so
+    /// they come from `Config.ahaRegistries` and an empty list is a setup mistake.
+    case ahaNoRegistries(service: String)
+    /// Every registry was reachable and none of them had the service online.
+    /// Distinct from a registry failing, because the two want different fixes.
+    case ahaLookupFailed(service: String)
+    /// The name resolved to an AHA *pool* rather than a single service. Pools are
+    /// spec §3.9 and M8; connecting to one member would silently ignore the rest.
+    case ahaPoolNotSupported(name: String)
+    /// `?mirror=` was asked for, but the registry predates the `filters` argument
+    /// (Synapse 2.95.0). Dropping the request would return the leader while the
+    /// caller believed they had asked for a mirror.
+    case ahaMirrorUnsupported(registry: String, version: [Int]?)
 }

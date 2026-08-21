@@ -95,7 +95,8 @@ struct TelepathURLTests {
 
     @Test("out-of-scope and removed schemes fail with a clear reason")
     func rejectedSchemes() {
-        #expect(throws: TelepathError.self) { try TelepathURL("aha://network/service") }
+        // aha:// was here until M7 brought it into scope (spec §3.9). It now parses;
+        // AHAResolutionTests covers what it parses into.
         #expect(throws: TelepathError.self) { try TelepathURL("tcp+consul://host/svc") }
         #expect(throws: TelepathError.self) { try TelepathURL("http://host/svc") }
         #expect(throws: TelepathError.self) { try TelepathURL("nonsense") }

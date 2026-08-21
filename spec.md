@@ -266,7 +266,9 @@ The merged `urlinfo` is then fed back through the normal open path, so an AHA
 service that resolves to `ssl://` gets §3.7's TLS rules unchanged. Resolution
 recurses; a resolved URL is an ordinary URL.
 
-**Pools.** If the resolved `svcinfo` carries a `services` key, the name is a pool
+**Pools.** If the resolved record carries a top-level `services` key — alongside
+`name`, *not* inside the nested `svcinfo`; Python names the local variable
+`svcinfo` at that point, which makes the two easy to confuse — the name is a pool
 rather than a service, and the client enters pool mode instead of connecting:
 
 - Call the generator `iterPoolTopo(poolname)` on the **registry** proxy. It first
