@@ -18,34 +18,40 @@ env:
   # stderr nobody reads into a crash. That ordering bug is invisible otherwise —
   # the tests still pass — and SwiftNIO has said it will become a crash anyway.
   SWIFTNIO_STRICT: "1"
-  # Distinguishes cache entries: the container jobs and the runner-installed
-  # toolchain lay .build out at different absolute paths, and a restore across
-  # the two produces a build that cannot be linked.
+  # Every Linux job now runs in this image and shares one cache entry. The tag is
+  # part of the key so a toolchain bump cannot restore objects built by the old
+  # compiler, which SwiftPM would then have to discard anyway.
   SWIFT_CACHE_TAG: swift-6.2-noble
 
 jobs:
   unit:
     name: Unit tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # Linux runs in the same image as every other Linux job. It used to install a
+    # toolchain with swift-actions/setup-swift, and that toolchain is not
+    # byte-identical run to run: the dependency cache restored (258 MB of it) and
+    # SwiftPM recompiled the whole graph anyway, because a changed compiler
+    # invalidates every module. Pinning the image took the job from 449s to a
+    # cache hit that is actually usable, and lets it share one cache entry with
+    # the integration jobs instead of keeping a second copy.
+    #
+    # An unset matrix.container evaluates to empty, which runs directly on the
+    # runner -- that is how macOS opts out.
+    container: ${{ matrix.container }}
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-15, ubuntu-latest]
+        include:
+          - os: macos-15
+          - os: ubuntu-latest
+            container: swift:6.2-noble
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Swift (Linux)
-        if: runner.os == 'Linux'
-        uses: swift-actions/setup-swift@v2
-        with:
-          # Dependencies (swift-nio, swift-log, swift-certificates) declare tools
-          # versions 6.1 and 6.2, and this package declares 6.2, so a 6.0
-          # toolchain cannot resolve it.
-          swift-version: "6.2"
-
       # The macOS image default Xcode is not a pin: GitHub can roll it back,
-      # which would resurrect the same resolution failure on the other half of
-      # this matrix while Linux stayed green.
+      # which would resurrect the resolution failure that dependency tools
+      # versions 6.1/6.2 cause on an older toolchain, on this half of the matrix
+      # while Linux stayed green.
       - name: Pin the macOS toolchain
         if: runner.os == 'macOS'
         uses: maxim-lobanov/setup-xcode@v1
@@ -67,8 +73,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .build
-          key: swiftpm-runner-${{ env.SWIFT_CACHE_TAG }}-${{ hashFiles('Package.resolved') }}
-          restore-keys: swiftpm-runner-${{ env.SWIFT_CACHE_TAG }}-
+          key: swiftpm-${{ env.SWIFT_CACHE_TAG }}-${{ hashFiles('Package.resolved') }}
+          restore-keys: swiftpm-${{ env.SWIFT_CACHE_TAG }}-
 
       - name: Build
         run: swift build --build-tests
@@ -81,6 +87,10 @@ jobs:
       # here and require them in the integration job below.
       - name: Confirm integration suites skipped deliberately
         run: |
+          # POSIX sh only on the Linux half, which now runs in a container under
+          # `sh -e {0}` rather than bash. Keep bashisms out; `set -o pipefail` has
+          # already aborted a container step here once, before a test could run.
+          #
           # Capture the status rather than piping to tee, which would report tee's
           # exit code and hide a failing test run.
           rc=0
