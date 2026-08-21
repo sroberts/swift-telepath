@@ -40,7 +40,7 @@ public struct ShareInfo: Sendable {
 /// string `"3.0.0"`, and the same change reaches `getCellInfo`. Reading only the
 /// tuple made ``Proxy/serverVersion`` return nil against a 3.0 server, which is a
 /// silent wrong answer rather than a failure — worse than either shape.
-enum SynapseVersionParsing {
+public enum SynapseVersionParsing {
     static func parse(_ value: MsgpackValue?) -> [Int]? {
         guard let value else { return nil }
         if let items = value.arrayValue {
@@ -53,9 +53,13 @@ enum SynapseVersionParsing {
         return nil
     }
 
-    /// A dotted numeric string, all-or-nothing. A partial parse of something like
-    /// `"3.0.0-rc1"` would compare wrong, so it is rejected instead.
-    static func parse(_ text: String) -> [Int]? {
+    /// Parses a dotted numeric version string such as `"3.0.0"`.
+    ///
+    /// All-or-nothing: a partial parse of something like `"3.0.0-rc1"` would
+    /// compare wrong, so it yields nil instead. Public because the `Synapse`
+    /// facade needs the identical rule for `getCellInfo`, and two copies of it
+    /// would drift the first time the rule changed.
+    public static func parse(_ text: String) -> [Int]? {
         let fields = text.split(separator: ".", omittingEmptySubsequences: false)
         let parts = fields.compactMap { Int($0) }
         guard !parts.isEmpty, parts.count == fields.count else { return nil }

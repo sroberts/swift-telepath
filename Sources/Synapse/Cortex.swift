@@ -172,24 +172,21 @@ public struct CellInfo: Sendable, Decodable {
         /// 2.x reports `synapse.version` as a tuple of integers, 3.0 as the dotted
         /// string `"3.0.0"`. Decoding only the tuple threw a type mismatch against
         /// 3.0, taking the whole of `getCellInfo` down with it.
+        ///
+        /// Every branch is lenient for the same reason: this is metadata about the
+        /// server, and a shape nobody anticipated should leave one field nil, not
+        /// fail the call that carries it. A third shape in some future release
+        /// would otherwise reproduce exactly the bug this decoder exists to fix.
         public init(from decoder: any Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
-            self.commit = try container.decodeIfPresent(String.self, forKey: .commit)
+            self.commit = try? container.decodeIfPresent(String.self, forKey: .commit)
             if let parts = try? container.decodeIfPresent([Int].self, forKey: .version) {
                 self.version = parts
-            } else if let text = try container.decodeIfPresent(String.self, forKey: .version) {
-                self.version = Self.parse(text)
+            } else if let text = try? container.decodeIfPresent(String.self, forKey: .version) {
+                self.version = SynapseVersionParsing.parse(text)
             } else {
                 self.version = nil
             }
-        }
-
-        /// All-or-nothing: a partial parse of `"3.0.0-rc1"` would compare wrong.
-        private static func parse(_ text: String) -> [Int]? {
-            let fields = text.split(separator: ".", omittingEmptySubsequences: false)
-            let parts = fields.compactMap { Int($0) }
-            guard !parts.isEmpty, parts.count == fields.count else { return nil }
-            return parts
         }
     }
 
