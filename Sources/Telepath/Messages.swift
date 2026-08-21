@@ -28,9 +28,38 @@ public struct ShareInfo: Sendable {
             }
         }
         self.methods = methods
-        self.synapseVersion = value["syn:version"]?.arrayValue?.compactMap { $0.intValue.map(Int.init) }
+        self.synapseVersion = SynapseVersionParsing.parse(value["syn:version"])
         self.synapseCommit = value["syn:commit"]?.stringValue
         self.classes = value["classes"]?.arrayValue?.compactMap(\.stringValue) ?? []
+    }
+}
+
+/// Synapse reports its own version two different ways, so both are accepted.
+///
+/// 2.x packs `syn:version` as a tuple of integers; 3.0 packs it as the dotted
+/// string `"3.0.0"`, and the same change reaches `getCellInfo`. Reading only the
+/// tuple made ``Proxy/serverVersion`` return nil against a 3.0 server, which is a
+/// silent wrong answer rather than a failure — worse than either shape.
+enum SynapseVersionParsing {
+    static func parse(_ value: MsgpackValue?) -> [Int]? {
+        guard let value else { return nil }
+        if let items = value.arrayValue {
+            let parts = items.compactMap { $0.intValue.map(Int.init) }
+            return parts.count == items.count ? parts : nil
+        }
+        if let text = value.stringValue {
+            return parse(text)
+        }
+        return nil
+    }
+
+    /// A dotted numeric string, all-or-nothing. A partial parse of something like
+    /// `"3.0.0-rc1"` would compare wrong, so it is rejected instead.
+    static func parse(_ text: String) -> [Int]? {
+        let fields = text.split(separator: ".", omittingEmptySubsequences: false)
+        let parts = fields.compactMap { Int($0) }
+        guard !parts.isEmpty, parts.count == fields.count else { return nil }
+        return parts
     }
 }
 

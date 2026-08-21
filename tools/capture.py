@@ -19,6 +19,15 @@ import synapse.lib.msgpack as s_msgpack
 CONNECTIONS = []
 
 
+def _synapse_version():
+    """The running Synapse version as a dotted string, either shape."""
+    version = __import__("synapse").version
+    if isinstance(version, str):
+        return version
+    return ".".join(str(part) for part in version)
+
+
+
 class Recorder:
     """One proxied connection. Telepath opens several: a main link created by the
     handshake, plus one per in-flight call, so they are recorded separately."""
@@ -119,7 +128,9 @@ async def main():
 
     scenario = {
         "label": args.label,
-        "synapseVersion": ".".join(str(p) for p in __import__("synapse").version),
+        # 2.x exposes synapse.version as a tuple, 3.0 as a string. Joining a
+        # string iterates its characters and records "3...0...0".
+        "synapseVersion": _synapse_version(),
         "connections": [
             {"index": c.index, "messages": c.messages}
             for c in CONNECTIONS if c.messages

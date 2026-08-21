@@ -204,7 +204,7 @@ public actor Proxy {
         if case .map(let raw)? = message["features"] {
             for (key, value) in raw {
                 guard let name = key.stringValue else { continue }
-                features[name] = value.intValue.map(Int.init) ?? (value.boolValue == true ? 1 : 0)
+                features[name] = Self.featureVersion(value)
             }
         }
 
@@ -216,7 +216,26 @@ public actor Proxy {
         )
     }
 
+    /// A feature's advertised version.
+    ///
+    /// 2.x advertises integers. 3.0 dropped the legacy feature set entirely — the
+    /// capabilities became unconditional — and its one remaining feature,
+    /// `stormservice`, carries the dotted string `"1.0.0"`. Reading only integers
+    /// scored that as 0, so `hasFeature("stormservice")` denied a feature the
+    /// server does advertise.
+    private static func featureVersion(_ value: MsgpackValue) -> Int {
+        if let number = value.intValue { return Int(number) }
+        if let text = value.stringValue, let major = SynapseVersionParsing.parse(text)?.first {
+            return major
+        }
+        return value.boolValue == true ? 1 : 0
+    }
+
     /// Feature gating: `features[name]` is a version integer, not a flag.
+    ///
+    /// Note that a Synapse 3.0 server advertises almost nothing here, so a false
+    /// answer means "not advertised", never "not supported". This client gates on
+    /// `sess` rather than on `features` for exactly that reason.
     public func hasFeature(_ name: String, minVersion: Int = 1) -> Bool {
         (features[name] ?? 0) >= minVersion
     }

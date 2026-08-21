@@ -164,6 +164,33 @@ public struct CellInfo: Sendable, Decodable {
     public struct SynapseVersion: Sendable, Decodable {
         public let version: [Int]?
         public let commit: String?
+
+        private enum CodingKeys: String, CodingKey {
+            case version, commit
+        }
+
+        /// 2.x reports `synapse.version` as a tuple of integers, 3.0 as the dotted
+        /// string `"3.0.0"`. Decoding only the tuple threw a type mismatch against
+        /// 3.0, taking the whole of `getCellInfo` down with it.
+        public init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.commit = try container.decodeIfPresent(String.self, forKey: .commit)
+            if let parts = try? container.decodeIfPresent([Int].self, forKey: .version) {
+                self.version = parts
+            } else if let text = try container.decodeIfPresent(String.self, forKey: .version) {
+                self.version = Self.parse(text)
+            } else {
+                self.version = nil
+            }
+        }
+
+        /// All-or-nothing: a partial parse of `"3.0.0-rc1"` would compare wrong.
+        private static func parse(_ text: String) -> [Int]? {
+            let fields = text.split(separator: ".", omittingEmptySubsequences: false)
+            let parts = fields.compactMap { Int($0) }
+            guard !parts.isEmpty, parts.count == fields.count else { return nil }
+            return parts
+        }
     }
 
     public let cell: Cell?
