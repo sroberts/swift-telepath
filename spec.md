@@ -35,9 +35,13 @@ Ship in five milestones: codec, transport plus handshake, unary calls, generator
 
 - **Server side.** No `Daemon` equivalent. Serving Telepath from Swift is a separate project.
 - **Task v1** (`task:init` / `task:fini`). Synapse deprecated it in 2.166.0 and it only triggers when the server omits a session iden. Detect it, raise a clear error, do not implement it.
-- **`aha://` resolution.** Requires a full client against the AHA service plus mirror-pool logic. Phase 2.
 - **`Pipeline`** (`getPipeline`). Deprecated in Synapse 2.167.0.
-- **Mirror pools, `dynmirror`, spawned links, fd passing.**
+- **Spawned links and fd passing.**
+
+`aha://` resolution and mirror pools were out of scope for v1.0 and are now
+specified for v1.1; see §3.9 and M7-M8. `dynmirror` remains unimplemented but is no
+longer a non-goal — it is the server-side feature AHA pools are built on, and §3.9
+records what a client must do about it.
 
 ### 2.3 Non-goals
 
@@ -190,7 +194,7 @@ Source: `synapse/telepath.py::openinfo`
 | `ssl` | `ssl://user@host:27492/share?certname=...&certhash=...&hostname=...` | See TLS below. |
 | `unix` | `unix:///path/to/sock:share` | Share name follows a colon inside the path. Defaults to `*`. |
 | `cell` | `cell:///path/to/celldir:share` | Appends `sock` to the cell directory and connects over unix. |
-| `aha` | `aha://network/service` | Out of scope for v1. Resolves through the AHA registry, merges its `urlinfo`, then recurses into `openinfo`. |
+| `aha` | `aha://service` or `aha://service...` | Specified in §3.9, targeted at M7. Resolves through the AHA registry set, merges its `urlinfo` by §3.9's precedence, then recurses. A trailing `...` is a relative name the registry completes with its own network. |
 | `*+consul` | any | Removed upstream. Reject. |
 
 Query parameters carry `certdir`, `certname`, `certhash`, `hostname`, and `name`. Parse them; do not silently ignore unknown ones, warn instead.
@@ -220,6 +224,71 @@ Source: `synapse/telepath.py::Proxy`
 
 Pool links skip the handshake. They connect and go straight to `t2:init` carrying the session iden obtained on the main link. This is why the session iden matters: it is the only thing binding a pool link to an authenticated session.
 
+
+### 3.9 `aha://` resolution and mirror pools
+
+Telepath has no published specification, so this section is a reading of
+`synapse/telepath.py` and `synapse/lib/aha.py` at 2.249.0, not a design.
+
+**Registry set.** An `aha://` URL resolves against a *set* of registry URLs, not
+one. Python holds them in a module-global refcounted dict (`aha_clients`), loaded
+from `telepath.yaml`'s `aha:servers` / `aha:registry`. A global is wrong for a
+library; `Config` carries the registry list instead, and a `Proxy` opened from an
+`aha://` URL with an empty registry list fails with a clear error rather than
+hanging. Python raises `NotReady: No aha servers registered to lookup {host}`.
+
+**Resolution.** For each registry in turn:
+
+1. Open a Telepath connection to the registry and call `getCellInfo()`.
+2. Call `getAhaSvc(name, filters={'mirror': bool})`. The `filters` argument is
+   sent **only** when the registry's own Synapse is >= 2.95.0; `mirror` comes
+   from the URL's `?mirror=` query parameter parsed as YAML-ish truth.
+3. A `None` result, or `svcinfo['online']` falsy, means try the next registry.
+4. Otherwise merge and recurse.
+
+Every registry failing raises the **last** exception seen, or `NoSuchName` if none
+threw. Falling through the whole set without an online service is not success.
+
+**Name resolution.** A service name ending in `...` is relative: the registry
+substitutes its own `aha:network`, so `cortex...` becomes `cortex.<network>`
+(`aha.py:_getAhaName`). Absolute names pass through. This happens server-side —
+the client sends the name as written.
+
+**Merge rules** (`mergeAhaInfo`), and the order matters:
+
+| Field | Winner |
+|---|---|
+| `path` | local — the AHA-provided path is discarded outright |
+| `user` | local, but only if the local URL specified one |
+| everything else | upstream |
+
+The merged `urlinfo` is then fed back through the normal open path, so an AHA
+service that resolves to `ssl://` gets §3.7's TLS rules unchanged. Resolution
+recurses; a resolved URL is an ordinary URL.
+
+**Pools.** If the resolved `svcinfo` carries a `services` key, the name is a pool
+rather than a service, and the client enters pool mode instead of connecting:
+
+- Call the generator `iterPoolTopo(poolname)` on the **registry** proxy. It first
+  replays the pool's current membership, then stays open and streams changes.
+- Messages are `('svc:add', svcinfo)` and `('svc:del', {name})`. An unrecognised
+  message kind is logged and dropped, per the forward-compatibility rule that
+  already governs Storm messages and main-link traffic.
+- Each member becomes its own `aha://<svcname>` connection. `svc:add` for a name
+  already present replaces the existing connection.
+- Calls round-robin over the ready members (Python uses a deque and refills it
+  from the live set when it empties).
+- If the topology stream drops, the **whole pool resets** — every member
+  connection is torn down and membership is rebuilt from a fresh
+  `iterPoolTopo`. Python retries on a 1s delay, indefinitely.
+
+The pool's `AsyncStream` of topology messages is exactly the kind of long-lived
+generator §3.3's link-per-call rule governs, so the topology stream owns its link
+for its whole life and never returns it to the pool.
+
+**What this does not include.** `dynmirror` is a server-side capability advertised
+in `features`; a client that does not ask for it is not broken by its absence.
+Spawned links and fd passing stay out of scope.
 ---
 
 ## 4. Package Architecture
@@ -444,8 +513,13 @@ Pin the tested Synapse version in `Package.swift` metadata and in the README. Ad
 | M3 | Generators and shares | Storm streams 100k nodes without unbounded memory growth. Early abandonment closes the link and leaks nothing. `t2:share` round-trips. |
 | M4 | `Synapse` facade | `Cortex.nodes`, `callStorm`, `count` typed and documented. Node model decodes every form in the base Synapse model. |
 | M5 | Hardening and docs | DocC published. Backpressure verified. Reconnect policy documented. 1.0 tagged. |
+| M6 | `Proxy.state` | `state` reports `disconnected` on a dropped main link, a killed server, and a timed-out call. Dropping the stream leaks neither the proxy nor its event loop group. A caller-driven reconnect works end to end against a restarted Cortex. |
+| M7 | `aha://` resolution | Resolves a single service against a live AHA registry, merges `urlinfo` by §3.9's precedence, and recurses into `ssl://` with §3.7's rules intact. An empty registry list, an offline service, and an unreachable registry each fail with distinct, clear errors. |
+| M8 | AHA mirror pools | A pool URL enters pool mode, replays membership, and round-robins calls. `svc:add` and `svc:del` are honoured live. A dropped topology stream resets and rebuilds the pool. Unknown topology messages are dropped, not fatal. |
 
-Phase 2 candidates in priority order: `aha://` resolution, Axon file upload and download streaming, AHA mirror pool awareness, a Telepath server implementation.
+M6 is independent of M7 and M8 and is the cheapest of the three; M8 depends on M7.
+
+Phase 2 candidates remaining, in priority order: Axon file upload and download streaming, a Telepath server implementation.
 
 ---
 
@@ -455,7 +529,13 @@ Phase 2 candidates in priority order: `aha://` resolution, Axon file upload and 
 
 **Backpressure across the NIO-to-AsyncSequence boundary.** A Storm query producing nodes faster than the consumer iterates will fill an unbounded buffer. Use `AsyncThrowingStream` with `.bufferingOldest(n)` and stop reading from the channel when the buffer is full, rather than buffering in userspace. Verify with a query returning a million nodes against a consumer that sleeps.
 
-**Reconnect semantics are undefined by the protocol.** A dropped main link invalidates the session, which invalidates every pool link. Decide whether `Proxy` transparently re-handshakes (and silently loses server-side share state) or surfaces the failure. Recommendation: surface it. Expose `Proxy.state` as an `AsyncStream` and let the caller decide, because re-handshaking after an `AuthDeny`-triggering credential rotation would loop.
+**Reconnect semantics — decided (2026-08-21).** A dropped main link invalidates the session, which invalidates every pool link. `Proxy` **surfaces the failure and never re-handshakes**, for the two reasons that decided it: a silent re-handshake loses server-side share state the caller still holds references to, and after a credential rotation it loops on `AuthDeny` instead of failing.
+
+What was missing was the other half — a caller cannot reconnect deliberately if nothing tells it the link died. `Proxy.state` becomes an `AsyncStream<Proxy.State>` with cases `connected` and `disconnected(any Error)`, finishing when the proxy is closed. Reconnection is then a caller policy expressed as a new `Proxy`, which is the only construction that can honestly rebuild the session, the pool, and the caller's shares together.
+
+Two constraints on the stream, both learned the hard way elsewhere in this client: it must not retain the proxy (a stream nobody drains would otherwise keep an actor and its event loop group alive forever), and a consumer that stops iterating must not stall the proxy — state changes are dropped for a slow consumer rather than buffered without bound. `AsyncStream(bufferingPolicy: .bufferingNewest(1))` gives both, since only the latest state is meaningful.
+
+AHA pools (§3.9) are the one place the client reconnects on its own, and they do not contradict this: a pool member is not the caller's session, the pool owns those connections outright, and pool reset is observable through the same `state` stream.
 
 **Cert directory format is undocumented and Synapse-specific.** Reading it may require tracking `synapse/lib/certdir.py`. If it proves unstable, drop it from v1 and require callers to supply PEM data directly.
 
@@ -479,3 +559,5 @@ All sources are the Synapse repository at `2.249.0`.
 - `synapse/common.py`: `retnexc`, `err`, `result`, the retn tuple contract
 - `synapse/lib/view.py`: Storm message stream
 - `synapse/lib/cell.py`: `features` dictionary contents
+- `synapse/lib/aha.py`: `iterPoolTopo`, `_getAhaName`, pool storage and windows
+- `synapse/lib/urlhelp.py`: `chopurl`, the `urlinfo` shape `aha://` merges into
