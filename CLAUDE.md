@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-MVP built: codec, transport, handshake, unary calls, generators, connection pool, and a typed Cortex facade, all verified against a live Synapse 2.249.0 Cortex. `spec.md` remains the requirements source of truth — read it before implementing anything, and update it when a decision changes rather than letting code and spec diverge. README.md's "Not yet implemented" section is the current gap list (TLS, shares, `aha://`, pool prefill, reconnect).
+MVP built: codec, transport, handshake, unary calls, generators, connection pool, and a typed Cortex facade, all verified against a live Synapse 2.249.0 Cortex. `spec.md` remains the requirements source of truth — read it before implementing anything, and update it when a decision changes rather than letting code and spec diverge. README.md's "Not yet implemented" section is the current gap list (`aha://` and mirror pools, reconnect, server side).
 
 ## What this is
 
@@ -132,5 +132,5 @@ Still open from spec §8: `Proxy.state` as an `AsyncStream`, and per-platform po
 ## Conventions
 
 - Default port is **27492**. `unix://` and `cell://` put the share name after a **colon** inside the path, not after a slash; share defaults to `*`.
-- Pool water marks (low 4 / high 12, 10s cull) mirror Python and must stay configurable — they are likely wrong for iOS on cellular. Low-water prefill is not implemented; links open on demand.
+- Pool water marks (low 4 / high 12, 10s cull) mirror Python and must stay configurable — they are likely wrong for iOS on cellular. Low-water top-up is implemented but reactive; see the note above.
 - Bump the pinned Synapse version in one place and regenerate vectors; version drift is caught by a scheduled job, not by review.
