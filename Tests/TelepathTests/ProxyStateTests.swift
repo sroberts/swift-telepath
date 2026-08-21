@@ -245,6 +245,51 @@ import Testing
         }
     }
 
+    /// `state` does not retain the proxy, which makes this reachable rather than
+    /// theoretical: drop the last reference while a task is iterating and, without
+    /// a `deinit` backstop, every observer stays suspended forever. Releasing a
+    /// continuation does not finish an `AsyncStream` — checked, not assumed.
+    @Test("dropping the proxy without closing finishes the stream", .timeLimit(.minutes(1)))
+    func deallocationFinishesTheStream() async throws {
+        try await withDaemon(handler: Self.handshakeOnly) { url in
+            var stream: AsyncStream<Proxy.State>?
+            do {
+                let proxy = try await Proxy.open(url)
+                stream = proxy.state
+                // Deliberately no close(): the last reference just goes away.
+            }
+            var iterator = stream!.makeAsyncIterator()
+            _ = await iterator.next()          // .connected, buffered at subscription
+            if case .some(let extra) = await iterator.next() {
+                Issue.record("expected the stream to finish, got \(extra)")
+            }
+        }
+    }
+
+    /// `connected` is yielded eagerly at subscription, so a buffer of one would
+    /// evict it when the link drops before the consumer's first read — silently
+    /// breaking the "connected, then disconnected" contract.
+    @Test("a drop before the first read still delivers both states", .timeLimit(.minutes(1)))
+    func bufferKeepsConnectedAcrossAnImmediateDrop() async throws {
+        let daemon = try await FakeDaemon.start(handler: Self.handshakeOnly)
+        let proxy = try await Proxy.open(daemon.url)
+
+        // Subscribe, then drop the link without reading anything first.
+        var iterator = proxy.state.makeAsyncIterator()
+        await daemon.stop()
+        try await Task.sleep(for: .milliseconds(100))
+
+        guard case .connected? = await iterator.next() else {
+            Issue.record("the buffered .connected was evicted by the drop")
+            return
+        }
+        guard case .disconnected? = await iterator.next() else {
+            Issue.record("expected .disconnected after .connected")
+            return
+        }
+        await proxy.close()
+    }
+
     /// Termination has to deregister, or a long-lived proxy accumulates a
     /// continuation per observer that ever existed.
     @Test("a terminated stream deregisters its observer")

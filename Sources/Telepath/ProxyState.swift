@@ -37,11 +37,15 @@ final class ProxyStateBroadcaster: Sendable {
 
     /// A new observer's stream.
     ///
-    /// Buffering is `bufferingNewest(1)`: only the latest state means anything, and
-    /// an unbounded buffer behind a consumer that stopped iterating is a leak with
-    /// extra steps. A slow observer therefore cannot stall the proxy.
+    /// Buffering is `bufferingNewest(2)`, which is the whole lifetime: `connected`
+    /// at subscription and at most one `disconnected`. A bound of 1 looked tidier
+    /// and was wrong — `connected` is yielded eagerly at subscription, so a link
+    /// dropping before the consumer's first `next()` would evict it and break the
+    /// documented "connected, then disconnected" contract. Two is still O(1), so a
+    /// consumer that stops iterating still cannot stall the proxy or grow a buffer
+    /// behind it.
     func makeStream() -> AsyncStream<Proxy.State> {
-        AsyncStream(Proxy.State.self, bufferingPolicy: .bufferingNewest(1)) { continuation in
+        AsyncStream(Proxy.State.self, bufferingPolicy: .bufferingNewest(2)) { continuation in
             let id: Int? = storage.withLockedValue { storage in
                 if storage.finished {
                     continuation.finish()

@@ -620,6 +620,15 @@ public actor Proxy {
         await link.close()
     }
 
+    deinit {
+        // A backstop, not the contract. `state` deliberately does not retain the
+        // proxy, which makes this reachable rather than theoretical: drop the last
+        // reference while a task is iterating and, without this, every observer
+        // stays suspended forever. Releasing a continuation does not finish an
+        // `AsyncStream` — verified, not assumed.
+        stateBroadcaster.finish()
+    }
+
     public func close() async {
         guard !closed else { return }
         closed = true

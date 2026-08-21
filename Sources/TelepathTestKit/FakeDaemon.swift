@@ -58,6 +58,9 @@ public actor FakeDaemon {
 
     private let group: any EventLoopGroup
     private var channel: Channel?
+    /// Whether this instance bound the socket path, so teardown removes only what
+    /// it created.
+    private var didBind = false
     private nonisolated let handlerTasks = HandlerTasks()
     public let socketPath: String
 
@@ -99,7 +102,18 @@ public actor FakeDaemon {
     }
 
     private func listen(handler: @escaping Handler) async throws {
-        try? FileManager.default.removeItem(atPath: socketPath)
+        // With caller-chosen paths, two daemons can be pointed at one address. The
+        // old code unlinked unconditionally, so the second silently stole the first
+        // one's socket and then the first one's teardown deleted the second's
+        // socket file -- leaving a daemon listening on an address that answers
+        // connection-refused. Refuse instead: a stale file is fine to clear, a live
+        // server is not.
+        if FileManager.default.fileExists(atPath: socketPath) {
+            if await Self.isListening(at: socketPath, group: group) {
+                throw FakeDaemonError.addressInUse(socketPath)
+            }
+            try? FileManager.default.removeItem(atPath: socketPath)
+        }
         let bootstrap = ServerBootstrap(group: group)
             .serverChannelOption(.backlog, value: 16)
             .childChannelInitializer { channel in
@@ -107,6 +121,16 @@ public actor FakeDaemon {
                     ConnectionHandler(handler: handler, tasks: self.handlerTasks))
             }
         channel = try await bootstrap.bind(unixDomainSocketPath: socketPath).get()
+        didBind = true
+    }
+
+    /// True when something already answers on the path, as opposed to a stale file
+    /// left by a daemon that did not clean up.
+    private static func isListening(at path: String, group: any EventLoopGroup) async -> Bool {
+        guard let channel = try? await ClientBootstrap(group: group)
+            .connect(unixDomainSocketPath: path).get() else { return false }
+        try? await channel.close().get()
+        return true
     }
 
     public func stop() async {
@@ -119,7 +143,25 @@ public actor FakeDaemon {
         // forced crash. Cancel and await them first so teardown is ordered.
         await handlerTasks.drain()
         try? await group.shutdownGracefully()
-        try? FileManager.default.removeItem(atPath: socketPath)
+        // Only what this instance bound. Removing a path it never owned would
+        // unlink a live daemon's socket.
+        if didBind {
+            didBind = false
+            try? FileManager.default.removeItem(atPath: socketPath)
+        }
+    }
+}
+
+/// Failures raised by the fake daemon itself.
+public enum FakeDaemonError: Error, Sendable, CustomStringConvertible {
+    /// Something is already listening on the requested socket path.
+    case addressInUse(String)
+
+    public var description: String {
+        switch self {
+        case .addressInUse(let path):
+            return "a daemon is already listening at \(path); stop it before starting another"
+        }
     }
 }
 
