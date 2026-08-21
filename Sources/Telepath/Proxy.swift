@@ -208,11 +208,18 @@ public actor Proxy {
         url: TelepathURL,
         timeout: TimeAmount?
     ) async throws -> HandshakeResult {
-        // When a user is supplied without a password, Synapse authenticates from a
-        // TLS client certificate and 'auth' stays None.
+        // A user with no password still sends `auth`, carrying an explicit null
+        // password — `telepath.py:1613` does exactly this, and the server needs the
+        // name to know whose certificate to expect. Sending `auth: None` instead
+        // makes the server see no user at all and answer
+        // `AuthDeny: Unable to find cell user (None)`.
+        //
+        // This is not a corner case: AHA hands back a `user` and never a password,
+        // so every resolved `aha://` URL takes this path.
         var auth: MsgpackValue = .null
-        if let user = url.user, let password = url.password {
-            auth = .array([.string(user), .map([.string("passwd"): .string(password)])])
+        if let user = url.user {
+            let password: MsgpackValue = url.password.map { .string($0) } ?? .null
+            auth = .array([.string(user), .map([.string("passwd"): password])])
         }
 
         try await link.send(.array([

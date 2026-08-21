@@ -9,3 +9,4 @@
 .dockercortex/
 .venv-drift/
 __pycache__/
+.testaha/
