@@ -120,7 +120,7 @@ Integration suites skip when no server is configured. **CI must set `TELEPATH_RE
 
 - **Non-UTF-8 strings repair by default.** `MsgpackDecoder` substitutes U+FFFD for a `.rawString` reaching a `String`; `.throw` is opt-in. Raw bytes stay reachable via `MsgpackValue.stringBytes`. Settles spec §8's first open question.
 - **Maps do not round-trip byte-exactly.** Swift `Dictionary` is unordered, so re-encoding permutes map keys. Held to semantic equality plus identical encoded length in `VectorTests`. Everything else is byte-exact; do not "fix" a failing map round-trip by weakening the non-map assertions.
-- **A dropped link surfaces as an error**; `Proxy` does not re-handshake. Re-handshaking loses server-side share state and loops after a credential rotation.
+- **A dropped link surfaces as an error**; `Proxy` does not re-handshake. Re-handshaking loses server-side share state and loops after a credential rotation. `Proxy.state` reports it instead, so reconnection is a caller policy expressed as a new `Proxy`. The stream deliberately does **not** retain the proxy — an `AsyncStream` retains its `onTermination` handler, so a handler capturing the proxy would pin an actor and its event loop group for as long as anyone held the stream, forever if they never drained it. `ProxyStateBroadcaster` exists to break that cycle. A timed-out or cancelled call must never report `disconnected`: it closes one pool link and the session survives.
 - **Abandoned generators close their link** rather than draining.
 - **Cancellation must be honoured on every await that waits on the network.** `Link.receive` wraps its continuation in `withTaskCancellationHandler`; a bare `withCheckedThrowingContinuation` ignores cancellation and leaves the call suspended until the server replies. That also breaks everything built on cancellation, including swift-testing's `.timeLimit` — the regression test for it hung past its own limit. A cancelled call closes its link for the same reason a timed-out one does.
 - **`callTimeout` bounds one wait, not one call.** Nil by default. For a generator that means the gap between yields, not total duration — a Storm query may legitimately run for hours. A timed-out link is **closed, never pooled**: the late reply would otherwise be delivered to the next call on that link. `CallTimeoutTests.lateReplyDoesNotDesync` covers exactly that, and fails if the link is released instead of closed.
@@ -133,7 +133,7 @@ Integration suites skip when no server is configured. **CI must set `TELEPATH_RE
 
 Pool prefill is deliberately **reactive**: links top up toward `poolLowWater` only after one has been taken, so a proxy that is never called opens no spare connections. Eager filling would be wrong for a client on a metered link.
 
-`Proxy.state` as an `AsyncStream` is settled in spec §8 and scheduled as M6 — decided, not built. Still genuinely open from §8: per-platform pool water marks (the Python 4/12 defaults are likely wrong for iOS on cellular, and `Config` already makes them configurable).
+`Proxy.state` as an `AsyncStream` is built (spec §8, M6). Still genuinely open from §8: per-platform pool water marks (the Python 4/12 defaults are likely wrong for iOS on cellular, and `Config` already makes them configurable).
 
 ## Conventions
 
