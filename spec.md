@@ -513,7 +513,7 @@ Pin the tested Synapse version in `Package.swift` metadata and in the README. Ad
 | M3 | Generators and shares | Storm streams 100k nodes without unbounded memory growth. Early abandonment closes the link and leaks nothing. `t2:share` round-trips. |
 | M4 | `Synapse` facade | `Cortex.nodes`, `callStorm`, `count` typed and documented. Node model decodes every form in the base Synapse model. |
 | M5 | Hardening and docs | DocC published. Backpressure verified. Reconnect policy documented. 1.0 tagged. |
-| M6 | `Proxy.state` | `state` reports `disconnected` on a dropped main link, a killed server, and a timed-out call. Dropping the stream leaks neither the proxy nor its event loop group. A caller-driven reconnect works end to end against a restarted Cortex. |
+| M6 | `Proxy.state` | `state` reports `disconnected` when the main link drops, whether the server closed it cleanly or died. A timed-out or cancelled call does **not** report it — that closes one pool link and leaves the session intact. Dropping the stream leaks neither the proxy nor its event loop group. A caller-driven reconnect works end to end against a restarted server. |
 | M7 | `aha://` resolution | Resolves a single service against a live AHA registry, merges `urlinfo` by §3.9's precedence, and recurses into `ssl://` with §3.7's rules intact. An empty registry list, an offline service, and an unreachable registry each fail with distinct, clear errors. |
 | M8 | AHA mirror pools | A pool URL enters pool mode, replays membership, and round-robins calls. `svc:add` and `svc:del` are honoured live. A dropped topology stream resets and rebuilds the pool. Unknown topology messages are dropped, not fatal. |
 
@@ -532,6 +532,8 @@ Phase 2 candidates remaining, in priority order: Axon file upload and download s
 **Reconnect semantics — decided (2026-08-21).** A dropped main link invalidates the session, which invalidates every pool link. `Proxy` **surfaces the failure and never re-handshakes**, for the two reasons that decided it: a silent re-handshake loses server-side share state the caller still holds references to, and after a credential rotation it loops on `AuthDeny` instead of failing.
 
 What was missing was the other half — a caller cannot reconnect deliberately if nothing tells it the link died. `Proxy.state` becomes an `AsyncStream<Proxy.State>` with cases `connected` and `disconnected(any Error)`, finishing when the proxy is closed. Reconnection is then a caller policy expressed as a new `Proxy`, which is the only construction that can honestly rebuild the session, the pool, and the caller's shares together.
+
+`state` describes the *session*, not individual calls. A timed-out or cancelled call closes its own pool link (§3.8) and the session survives, so it must not report `disconnected`; only the main link dropping ends the session. Reporting otherwise would make the signal useless for the thing it exists for.
 
 Two constraints on the stream, both learned the hard way elsewhere in this client: it must not retain the proxy (a stream nobody drains would otherwise keep an actor and its event loop group alive forever), and a consumer that stops iterating must not stall the proxy — state changes are dropped for a slow consumer rather than buffered without bound. `AsyncStream(bufferingPolicy: .bufferingNewest(1))` gives both, since only the latest state is meaningful.
 
