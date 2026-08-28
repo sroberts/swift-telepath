@@ -312,9 +312,8 @@ server instead of filling a userspace buffer.
   other major rather than mis-decoding its nodes. The `Telepath` layer is version
   agnostic and is verified against 3.0.0, so `Proxy` works there today. See
   [docs/synapse-3.0.md](docs/synapse-3.0.md).
-- **AHA mirror pools.** `aha://` resolves a single service (§3.9); a name that
-  resolves to a *pool* is refused rather than silently connected to one member.
-  Scheduled as M8.
+- **`dynmirror`.** A server-side capability the client does not request; its
+  absence breaks nothing.
 - **Automatic reconnect**, deliberately. A dropped main link surfaces as an error
   and the proxy never re-handshakes: a silent re-handshake loses server-side share
   state and would loop on `AuthDeny` after a credential rotation. Observe

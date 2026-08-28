@@ -288,6 +288,14 @@ The pool's `AsyncStream` of topology messages is exactly the kind of long-lived
 generator §3.3's link-per-call rule governs, so the topology stream owns its link
 for its whole life and never returns it to the pool.
 
+**Members are evicted when their session ends**, not only when AHA says so. A
+`Proxy` never re-handshakes (§8), so a member whose link drops stays dead, and a
+partition between this client and one member is invisible to AHA — no `svc:del`
+is coming. The pool observes each member's `Proxy.state` and drops it on
+`disconnected`, which is what makes "round-robin over the ready members" true
+rather than aspirational. Python gets the same property a different way, from a
+per-member client that reconnects.
+
 **What this does not include.** `dynmirror` is a server-side capability advertised
 in `features`; a client that does not ask for it is not broken by its absence.
 Spawned links and fd passing stay out of scope.
@@ -517,7 +525,7 @@ Pin the tested Synapse version in `Package.swift` metadata and in the README. Ad
 | M5 | Hardening and docs | DocC published. Backpressure verified. Reconnect policy documented. 1.0 tagged. |
 | M6 | `Proxy.state` | `state` reports `disconnected` when the main link drops, whether the server closed it cleanly or died. A timed-out or cancelled call does **not** report it — that closes one pool link and leaves the session intact. Dropping the stream leaks neither the proxy nor its event loop group. A caller-driven reconnect works end to end against a restarted server. |
 | M7 | `aha://` resolution | Resolves a single service against a live AHA registry, merges `urlinfo` by §3.9's precedence, and recurses into `ssl://` with §3.7's rules intact. An empty registry list, an offline service, and an unreachable registry each fail with distinct, clear errors. |
-| M8 | AHA mirror pools | A pool URL enters pool mode, replays membership, and round-robins calls. `svc:add` and `svc:del` are honoured live. A dropped topology stream resets and rebuilds the pool. Unknown topology messages are dropped, not fatal. |
+| M8 | AHA mirror pools | A pool URL enters pool mode, replays membership, and round-robins calls. `svc:add` and `svc:del` are honoured live. A dropped topology stream resets and rebuilds the pool, including when it fails over to a different registry. A member whose session dies is evicted. Unknown topology messages are dropped, not fatal. |
 
 M6 is independent of M7 and M8 and is the cheapest of the three; M8 depends on M7.
 
@@ -539,7 +547,7 @@ What was missing was the other half — a caller cannot reconnect deliberately i
 
 Two constraints on the stream, both learned the hard way elsewhere in this client: it must not retain the proxy (a stream nobody drains would otherwise keep an actor and its event loop group alive forever), and a consumer that stops iterating must not stall the proxy — state changes are dropped for a slow consumer rather than buffered without bound. `AsyncStream(bufferingPolicy: .bufferingNewest(2))` gives both. Two rather than one because that is the stream's entire lifetime — `connected` at subscription and at most one `disconnected` — and a bound of one would evict the `connected` a subscriber has not read yet when the link drops immediately after, contradicting the contract the stream exists to provide.
 
-AHA pools (§3.9) are the one place the client reconnects on its own, and they do not contradict this: a pool member is not the caller's session, the pool owns those connections outright, and pool reset is observable through the same `state` stream.
+AHA pools (§3.9) are the one place the client reconnects on its own, and they do not contradict this: a pool member is not the caller's session, and the pool owns those connections outright rather than handing them to a caller who holds shares on them. `AHAPool` deliberately exposes no `state` of its own — it has no single session to report — and instead *consumes* each member's `Proxy.state`, evicting a member whose session ends. Membership is observable through `AHAPool.memberNames`.
 
 **Cert directory format is undocumented and Synapse-specific.** Reading it may require tracking `synapse/lib/certdir.py`. If it proves unstable, drop it from v1 and require callers to supply PEM data directly.
 

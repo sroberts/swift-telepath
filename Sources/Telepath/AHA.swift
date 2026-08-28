@@ -42,7 +42,7 @@ enum AHAResolver {
                 // A pool, or a mirror the registry cannot filter for, is a definite
                 // answer about this service. Trying the next registry would only
                 // produce the same answer more slowly.
-                if case .ahaPoolNotSupported = error { throw error }
+                if case .ahaIsAPool = error { throw error }
                 if case .ahaMirrorUnsupported = error { throw error }
                 logger.warning("aha registry \(registry) failed for \(name): \(error)")
                 lastFailure = error
@@ -118,7 +118,7 @@ enum AHAResolver {
         // — not inside the nested `svcinfo`. Python names the local variable
         // `svcinfo` at that point, which makes the two easy to confuse.
         if reply["services"] != nil {
-            throw TelepathError.ahaPoolNotSupported(name: reply["name"]?.stringValue ?? name)
+            throw TelepathError.ahaIsAPool(name: reply["name"]?.stringValue ?? name)
         }
 
         guard let svcinfo = reply["svcinfo"] else { return nil }
