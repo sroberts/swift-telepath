@@ -364,9 +364,9 @@ import Testing
         }
     }
 
-    /// Pools are M8. Connecting to one member would silently ignore the rest, so
-    /// this refuses instead — and refuses without trying other registries, since a
-    /// pool is a definite answer about the name.
+    /// Resolution answers about a single service. A pool has no single session, so
+    /// it is refused here and belongs to ``AHAPool`` — and refused without trying
+    /// other registries, since a pool is a definite answer about the name.
     @Test("a pool is refused rather than treated as a service")
     func poolIsRefused() async throws {
         try await withRegistry(answer: { _ in
@@ -378,7 +378,7 @@ import Testing
                 _ = try await resolve("aha://pool", registries: [registryURL])
                 Issue.record("expected the pool to be refused")
             } catch let error as TelepathError {
-                guard case .ahaPoolNotSupported(let name) = error else {
+                guard case .ahaIsAPool(let name) = error else {
                     Issue.record("wrong error: \(error)")
                     return
                 }

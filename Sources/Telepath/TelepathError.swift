@@ -138,9 +138,14 @@ public enum TelepathError: Error, Sendable, Equatable {
     /// Every registry was reachable and none of them had the service online.
     /// Distinct from a registry failing, because the two want different fixes.
     case ahaLookupFailed(service: String)
-    /// The name resolved to an AHA *pool* rather than a single service. Pools are
-    /// spec §3.9 and M8; connecting to one member would silently ignore the rest.
-    case ahaPoolNotSupported(name: String)
+    /// The name resolved to an AHA *pool* rather than a single service.
+    ///
+    /// A pool has no single session, so it is not a ``Proxy``; open it with
+    /// ``AHAPool`` instead. Connecting to one member as if it were the service
+    /// would silently ignore the rest.
+    case ahaIsAPool(name: String)
+    /// An ``AHAPool`` was opened for a name that is a single service, not a pool.
+    case ahaIsNotAPool(name: String)
     /// `?mirror=` was asked for, but the registry predates the `filters` argument
     /// (Synapse 2.95.0). Dropping the request would return the leader while the
     /// caller believed they had asked for a mirror.

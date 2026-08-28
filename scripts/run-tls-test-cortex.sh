@@ -83,7 +83,13 @@ import synapse.telepath as s_telepath
 
 async def main(dirn, username):
     async with await s_telepath.openurl(f'cell://{dirn}') as cell:
-        user = await cell.addUser(username)
+        # Idempotent: the cell directory survives between runs, so on a restart
+        # the user already exists and addUser raises DupUser. That aborted the
+        # script after the listeners were already up, leaving an environment that
+        # looked broken but was merely half-configured.
+        user = await cell.getUserDefByName(username)
+        if user is None:
+            user = await cell.addUser(username)
         await cell.setUserAdmin(user['iden'], True)
 
 asyncio.run(main(sys.argv[1], sys.argv[2]))
