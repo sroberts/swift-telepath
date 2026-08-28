@@ -9,10 +9,17 @@ toolchain**, declared by the manifest's tools version: swift-nio, swift-log and
 swift-certificates themselves declare 6.1 and 6.2, so an older toolchain cannot
 resolve the package.
 
-> **Status: MVP.** Connect, call, and stream against a real Cortex over `tcp://`,
-> `ssl://`, `unix://`, and `cell://`, including certificate pinning and TLS client
-> certificates. Dynamic shares and `aha://` are not implemented yet — see
-> [Not yet implemented](#not-yet-implemented).
+> **Status: 1.0.** Connect, call, and stream against a real Cortex over `tcp://`,
+> `ssl://`, `unix://`, `cell://`, and `aha://`, including certificate pinning, TLS
+> client certificates, dynamic shares, and AHA mirror pools. Verified against a
+> live Synapse 2.249.0 on every release. See
+> [Not yet implemented](#not-yet-implemented) for what is deliberately absent.
+
+## Installation
+
+```swift
+.package(url: "https://github.com/sroberts/swift-telepath.git", from: "1.0.0")
+```
 
 ## Usage
 

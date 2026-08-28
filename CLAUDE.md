@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-MVP built: codec, transport, handshake, unary calls, generators, connection pool, and a typed Cortex facade, all verified against a live Synapse 2.249.0 Cortex. `spec.md` remains the requirements source of truth — read it before implementing anything, and update it when a decision changes rather than letting code and spec diverge. README.md's "Not yet implemented" section is the current gap list (`aha://` and mirror pools, `Proxy.state`, Synapse 3.x, server side).
+**1.0 tagged.** Codec, transport, handshake, unary calls, generators, connection pool, dynamic shares, TLS, `Proxy.state`, `aha://` resolution, AHA mirror pools, and a typed Cortex facade — all verified against a live Synapse 2.249.0 Cortex, TLS listeners, and a real AHA registry. The public API of `Msgpack`, `Telepath` and `Synapse` is now a semver commitment; breaking it needs a major bump. `spec.md` remains the requirements source of truth — read it before implementing anything, and update it when a decision changes rather than letting code and spec diverge. README.md's "Not yet implemented" section is the current gap list (`aha://` and mirror pools, `Proxy.state`, Synapse 3.x, server side).
 
 ## What this is
 
