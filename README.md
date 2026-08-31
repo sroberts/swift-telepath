@@ -326,3 +326,12 @@ server instead of filling a userspace buffer.
   state and would loop on `AuthDeny` after a credential rotation. Observe
   `Proxy.state` and open a new `Proxy` if that is the policy you want.
 - **Server side.** Out of scope.
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+Telepath is defined by the [Synapse](https://github.com/vertexproject/synapse)
+project, also Apache 2.0. This is an independent client: it contains no Synapse
+source, and was implemented against upstream source as a reference and verified
+against a running server.

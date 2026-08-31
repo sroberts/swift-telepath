@@ -8,5 +8,6 @@
 .testcerts/
 .dockercortex/
 .venv-drift/
+.venv-syn3/
 __pycache__/
 .testaha/
